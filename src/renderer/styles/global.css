@@ -1,0 +1,53 @@
+:root {
+  color-scheme: light;
+  font-family:
+    Inter, "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  user-select: none;
+}
+
+canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+#status {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  z-index: 1;
+  padding: 10px 16px;
+  border: 1px solid rgb(255 255 255 / 65%);
+  border-radius: 999px;
+  color: #29443a;
+  background: rgb(244 251 246 / 92%);
+  box-shadow: 0 8px 28px rgb(31 58 47 / 16%);
+  font-size: 14px;
+  line-height: 1.4;
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+}
+
+#status[data-state="error"] {
+  color: #7e2828;
+  background: rgb(255 239 239 / 94%);
+}
