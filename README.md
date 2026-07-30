@@ -33,6 +33,8 @@ npm run dev
 
 Electron 43 的 Windows 运行时会在首次执行 `npm run setup:electron` 或启动应用时下载。如果所在网络访问 Electron 发布服务器较慢，可以按照 Electron 官方安装说明配置镜像；不要把个人的全局镜像配置提交到仓库。
 
+由于当前项目父目录包含 `#`，Vite 开发服务器无法可靠解析源码 URL。`npm run dev` 会改用 Vite 持续构建，并在构建产物变化时自动重启 Electron；保存源码后仍会自动刷新运行中的应用。
+
 常用命令：
 
 ```bash

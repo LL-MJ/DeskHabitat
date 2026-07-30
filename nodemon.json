@@ -1,0 +1,11 @@
+{
+  "watch": [
+    "dist/main",
+    "dist/preload",
+    "dist/renderer"
+  ],
+  "ext": "js,html,css",
+  "delay": 800,
+  "exec": "electron .",
+  "quiet": true
+}
