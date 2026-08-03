@@ -24,6 +24,20 @@ body {
   user-select: none;
 }
 
+body[data-debug-window="true"] {
+  background-image:
+    linear-gradient(45deg, rgb(31 58 47 / 5%) 25%, transparent 25%),
+    linear-gradient(-45deg, rgb(31 58 47 / 5%) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgb(31 58 47 / 5%) 75%),
+    linear-gradient(-45deg, transparent 75%, rgb(31 58 47 / 5%) 75%);
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
 canvas {
   position: absolute;
   inset: 0;
@@ -50,4 +64,44 @@ canvas {
 #status[data-state="error"] {
   color: #7e2828;
   background: rgb(255 239 239 / 94%);
+}
+
+body[data-mode="life"][data-debug-window="false"] #status {
+  display: none;
+}
+
+#mode-panel {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  z-index: 2;
+  display: none;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / 70%);
+  border-radius: 12px;
+  background: rgb(244 251 246 / 92%);
+  box-shadow: 0 8px 28px rgb(31 58 47 / 16%);
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+}
+
+body[data-mode="build"] #mode-panel {
+  display: flex;
+}
+
+#mode-panel button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #29443a;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+#mode-panel button:hover,
+#mode-panel button[data-active="true"] {
+  color: #fff;
+  background: #56836d;
 }

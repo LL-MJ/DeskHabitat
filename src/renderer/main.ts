@@ -2,7 +2,33 @@ import 'pixi.js/unsafe-eval';
 import { Application } from 'pixi.js';
 
 import { normalizePixelRatio } from '../shared/runtime';
+import type { WindowMode, WindowState } from '../shared/window';
 import './styles/global.css';
+import { WorldView } from './world/WorldView';
+
+function renderWindowState(state: WindowState): void {
+  const status = document.querySelector<HTMLElement>('#status');
+  if (status === null) return;
+
+  document.body.dataset['mode'] = state.mode;
+  document.body.dataset['debugWindow'] = String(state.debugWindow);
+  document.body.dataset['pointerPassthrough'] = String(
+    state.pointerPassthrough,
+  );
+
+  const modeLabels: Record<WindowMode, string> = {
+    life: '生活模式',
+    build: '布置模式',
+    paused: '已暂停',
+  };
+  status.textContent = `${modeLabels[state.mode]} · ${state.display.label} · ${state.layer === 'overlay' ? '置顶层' : '桌面层'}`;
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    '#mode-panel [data-mode]',
+  )) {
+    button.dataset['active'] = String(button.dataset['mode'] === state.mode);
+  }
+}
 
 async function bootstrap(): Promise<void> {
   const root = document.querySelector<HTMLElement>('#app');
@@ -24,8 +50,42 @@ async function bootstrap(): Promise<void> {
   pixi.canvas.setAttribute('aria-hidden', 'true');
   root.prepend(pixi.canvas);
 
-  const version = await window.deskHabitat.app.getVersion();
-  status.textContent = `DeskHabitat ${version} · 项目骨架已就绪`;
+  const [version, state] = await Promise.all([
+    window.deskHabitat.app.getVersion(),
+    window.deskHabitat.window.getState(),
+  ]);
+  const world = new WorldView(pixi, { debug: state.debugWindow });
+  world.setMode(state.mode);
+  document.title = `DeskHabitat ${version}`;
+  renderWindowState(state);
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    '#mode-panel [data-mode]',
+  )) {
+    button.addEventListener('click', () => {
+      const mode = button.dataset['mode'] as WindowMode;
+      void window.deskHabitat.window.setMode(mode).then(renderWindowState);
+    });
+  }
+
+  window.deskHabitat.events.onCommand((command) => {
+    if (command.type === 'state-changed') {
+      renderWindowState(command.state);
+      world.setMode(command.state.mode);
+    }
+    if (command.type === 'display-changed') {
+      const nextResolution = normalizePixelRatio(window.devicePixelRatio);
+      if (pixi.renderer.resolution !== nextResolution) {
+        pixi.renderer.resolution = nextResolution;
+        pixi.renderer.resize(window.innerWidth, window.innerHeight);
+      }
+      world.resize(window.innerWidth, window.innerHeight);
+      void window.deskHabitat.window.getState().then(renderWindowState);
+    }
+  });
+  window.addEventListener('resize', () => {
+    world.resize(window.innerWidth, window.innerHeight);
+  });
   window.deskHabitat.lifecycle.rendererReady();
 }
 

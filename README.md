@@ -6,7 +6,7 @@ A tiny animated animal habitat living on your desktop.
 
 ## 当前阶段
 
-项目已完成 M0 基础骨架，正式桌宠功能将从 M1 开始逐阶段实现。
+项目已完成 M0 基础骨架和 M1 桌面窗口；M2 等距坐标、PixiJS 渲染层和程序化草地已实现，正在进行视觉验收。
 
 当前技术栈：
 
@@ -30,6 +30,15 @@ npm install
 npm run setup:electron
 npm run dev
 ```
+
+开发环境默认使用居中的 `900×600` 固定调试窗口，避免透明全屏窗口影响日常操作。需要在开发环境验收真实桌面覆盖行为时使用：
+
+```powershell
+$env:DESK_HABITAT_DESKTOP_WINDOW = "1"
+npm run dev
+```
+
+托盘菜单可以切换生活、布置和暂停模式，也可以恢复鼠标穿透、切换置顶策略及退出应用。开发调试窗口中可按 `Ctrl+Shift+P` 强制恢复鼠标穿透。
 
 Electron 43 的 Windows 运行时会在首次执行 `npm run setup:electron` 或启动应用时下载。如果所在网络访问 Electron 发布服务器较慢，可以按照 Electron 官方安装说明配置镜像；不要把个人的全局镜像配置提交到仓库。
 
@@ -57,3 +66,5 @@ npm run dist:win   # 生成 Windows NSIS 安装包
 ## 项目文档
 
 - [完整项目计划书](./IMPLEMENTATION_PLAN.md)
+- [M1 Windows 人工验收清单](./docs/M1_MANUAL_TEST.md)
+- [M2 等距世界人工验收清单](./docs/M2_MANUAL_TEST.md)
