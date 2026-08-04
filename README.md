@@ -6,7 +6,7 @@ A tiny animated animal habitat living on your desktop.
 
 ## 当前阶段
 
-项目已完成 M0 基础骨架、M1 桌面窗口和 M2 等距世界；M3 兔子渲染、固定步长模拟和随机游荡已进入验收阶段。
+项目已完成 M0 至 M3；M4 导航网格、A* 寻路、动态栅栏和路径恢复已进入验收阶段。
 
 当前技术栈：
 
@@ -69,3 +69,4 @@ npm run dist:win   # 生成 Windows NSIS 安装包
 - [M1 Windows 人工验收清单](./docs/M1_MANUAL_TEST.md)
 - [M2 等距世界人工验收清单](./docs/M2_MANUAL_TEST.md)
 - [M3 兔子与基础模拟人工验收清单](./docs/M3_MANUAL_TEST.md)
+- [M4 导航与栅栏人工验收清单](./docs/M4_MANUAL_TEST.md)

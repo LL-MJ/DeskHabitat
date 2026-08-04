@@ -5,6 +5,7 @@ import {
   RabbitModel,
   selectRabbitFacing,
 } from '../src/shared/rabbit.ts';
+import { NavigationGrid } from '../src/shared/navigation.ts';
 import { FixedStepClock } from '../src/shared/simulation.ts';
 
 describe('fixed-step simulation clock', () => {
@@ -51,8 +52,48 @@ describe('rabbit simulation', () => {
     for (let index = 0; index < 500; index += 1) rabbit.step(0.1);
 
     const snapshot = rabbit.getSnapshot();
-    assert.ok(snapshot.position.x >= 0.25 && snapshot.position.x <= 6.75);
-    assert.ok(snapshot.position.y >= 0.25 && snapshot.position.y <= 4.75);
+    assert.ok(snapshot.position.x >= 0 && snapshot.position.x <= 7);
+    assert.ok(snapshot.position.y >= 0 && snapshot.position.y <= 5);
     assert.ok(snapshot.state === 'idle' || snapshot.state === 'wander');
+  });
+
+  it('invalidates its path when the navigation grid changes', () => {
+    const navigation = new NavigationGrid({ columns: 5, rows: 5 });
+    const rabbit = new RabbitModel({
+      columns: 5,
+      rows: 5,
+      navigation,
+      random: () => 0.99,
+    });
+    for (let index = 0; index < 9; index += 1) rabbit.step(0.1);
+
+    const wandering = rabbit.getSnapshot();
+    assert.equal(wandering.state, 'wander');
+    assert.ok(wandering.target);
+    navigation.setBlocked(wandering.target, true);
+    rabbit.step(0.1);
+
+    const recovered = rabbit.getSnapshot();
+    assert.equal(recovered.state, 'idle');
+    assert.equal(recovered.target, null);
+    assert.equal(recovered.repathCount, 1);
+    assert.equal(recovered.transitionReason, 'repath_failed');
+  });
+
+  it('recovers to the nearest walkable cell if fenced in place', () => {
+    const navigation = new NavigationGrid({ columns: 5, rows: 5 });
+    const rabbit = new RabbitModel({
+      columns: 5,
+      rows: 5,
+      navigation,
+    });
+    navigation.setBlocked({ x: 2, y: 2 }, true);
+    rabbit.step(0.1);
+
+    const recovered = rabbit.getSnapshot();
+    assert.notDeepEqual(recovered.position, { x: 2, y: 2 });
+    assert.equal(navigation.isWalkable(recovered.position), true);
+    assert.equal(recovered.transitionReason, 'blocked_cell_recovery');
+    assert.equal(recovered.repathCount, 1);
   });
 });

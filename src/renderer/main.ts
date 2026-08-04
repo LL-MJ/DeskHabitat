@@ -21,7 +21,8 @@ function renderWindowState(state: WindowState): void {
     build: '布置模式',
     paused: '已暂停',
   };
-  status.textContent = `${modeLabels[state.mode]} · ${state.display.label} · ${state.layer === 'overlay' ? '置顶层' : '桌面层'}`;
+  const buildHint = state.mode === 'build' ? ' · 点击草地格切换栅栏' : '';
+  status.textContent = `${modeLabels[state.mode]} · ${state.display.label} · ${state.layer === 'overlay' ? '置顶层' : '桌面层'}${buildHint}`;
 
   for (const button of document.querySelectorAll<HTMLButtonElement>(
     '#mode-panel [data-mode]',
@@ -58,6 +59,10 @@ async function bootstrap(): Promise<void> {
   world.setMode(state.mode);
   document.title = `DeskHabitat ${version}`;
   renderWindowState(state);
+  pixi.canvas.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    world.toggleFenceAtViewport({ x: event.offsetX, y: event.offsetY });
+  });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>(
     '#mode-panel [data-mode]',
