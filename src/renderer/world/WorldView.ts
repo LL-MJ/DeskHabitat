@@ -47,6 +47,18 @@ interface FenceConnection {
   b: GridCell;
 }
 
+export type BuildTool = 'select' | 'fence' | 'foodBowl' | 'waterBowl';
+
+export interface BuildFeedback {
+  message: string;
+  valid: boolean;
+  selected: boolean;
+}
+
+type BuildSelection =
+  | { type: 'facility'; id: string; cell: GridCell }
+  | { type: 'fence'; cell: GridCell };
+
 interface FenceStroke {
   start: GridCell;
   last: GridCell;
@@ -91,12 +103,20 @@ export class WorldView {
   private readonly debugBackdrop = new Graphics({ label: 'debug-backdrop' });
   private readonly navigationDebug = new Graphics({ label: 'path-debug' });
   private readonly fencePreview = new Graphics({ label: 'fence-preview' });
+  private readonly buildObjectPreview = new Graphics({
+    label: 'build-object-preview',
+  });
   private readonly fenceConnections = new Map<string, FenceConnection>();
   private readonly fencePosts = new Map<string, GridCell>();
   private fenceViews: Graphics[] = [];
   private facilityViews: Container[] = [];
   private facilitySignature = '';
   private fenceStroke: FenceStroke | null = null;
+  private buildTool: BuildTool = 'select';
+  private buildSelection: BuildSelection | null = null;
+  private buildHoverCell: GridCell | null = null;
+  private draggedFacilityId: string | null = null;
+  private facilityIdCounter = 3;
   private readonly simulationClock = new FixedStepClock();
   private mode: WindowMode = 'life';
   private simulationSteps = 0;
@@ -123,6 +143,7 @@ export class WorldView {
     );
     this.app.stage.addChild(this.root, this.uiLayer);
     this.previewLayer.addChild(this.fencePreview);
+    this.previewLayer.addChild(this.buildObjectPreview);
 
     this.drawGround();
     this.navigation = new NavigationGrid({
@@ -195,7 +216,10 @@ export class WorldView {
     if (mode !== 'build') {
       this.clearFenceCandidate();
       this.fenceStroke = null;
+      this.draggedFacilityId = null;
+      this.buildHoverCell = null;
     }
+    this.drawBuildObjectPreview();
   }
 
   resize(width: number, height: number): void {
@@ -208,13 +232,169 @@ export class WorldView {
     this.root.scale.set(transform.scale);
   }
 
+  setBuildTool(tool: BuildTool): BuildFeedback {
+    this.buildTool = tool;
+    this.draggedFacilityId = null;
+    this.clearFenceCandidate();
+    this.fenceStroke = null;
+    this.drawBuildObjectPreview();
+    const labels: Record<BuildTool, string> = {
+      select: '选择对象后可拖动、旋转或删除',
+      fence: '按住鼠标连续绘制栅栏',
+      foodBowl: '移动到合法格并单击放置食盆',
+      waterBowl: '移动到合法格并单击放置水盆',
+    };
+    return this.buildFeedback(labels[tool], true);
+  }
+
+  updateBuildPointer(viewport: Point): BuildFeedback {
+    if (this.mode !== 'build') return this.buildFeedback('当前不在布置模式', false);
+    this.buildHoverCell = this.viewportToGridCell(viewport);
+    this.drawBuildObjectPreview();
+    if (!this.buildHoverCell) return this.buildFeedback('超出可布置区域', false);
+    if (this.buildTool === 'foodBowl' || this.buildTool === 'waterBowl') {
+      const valid = this.canPlaceFacility(this.buildHoverCell);
+      return this.buildFeedback(valid ? '单击确认放置' : '该位置不可放置设施', valid);
+    }
+    if (this.draggedFacilityId) {
+      const valid = this.canPlaceFacility(
+        this.buildHoverCell,
+        this.draggedFacilityId,
+      );
+      return this.buildFeedback(valid ? '松开确认移动' : '该位置不可移动', valid);
+    }
+    return this.buildFeedback('选择对象或工具开始布置', true);
+  }
+
+  beginBuildInteraction(viewport: Point): BuildFeedback {
+    if (this.mode !== 'build') return this.buildFeedback('当前不在布置模式', false);
+    this.buildHoverCell = this.viewportToGridCell(viewport);
+    if (this.buildTool === 'fence') {
+      const valid = this.beginFenceStrokeAtViewport(viewport);
+      return this.buildFeedback(
+        valid ? '正在绘制栅栏' : '不能从该位置开始绘制',
+        valid,
+      );
+    }
+    if (!this.buildHoverCell) return this.buildFeedback('超出可布置区域', false);
+    if (this.buildTool === 'foodBowl' || this.buildTool === 'waterBowl') {
+      return this.placeFacility(this.buildTool, this.buildHoverCell);
+    }
+
+    const facility = this.facilities.getAt(this.buildHoverCell);
+    if (facility) {
+      this.buildSelection = {
+        type: 'facility',
+        id: facility.id,
+        cell: { ...facility.cell },
+      };
+      this.draggedFacilityId = facility.id;
+      this.drawBuildObjectPreview();
+      return this.buildFeedback(`已选择 ${facility.id}`, true);
+    }
+    if (this.fencePosts.has(gridCellKey(this.buildHoverCell))) {
+      this.buildSelection = { type: 'fence', cell: { ...this.buildHoverCell } };
+      this.draggedFacilityId = null;
+      this.drawBuildObjectPreview();
+      return this.buildFeedback('已选择栅栏柱', true);
+    }
+    this.buildSelection = null;
+    this.draggedFacilityId = null;
+    this.drawBuildObjectPreview();
+    return this.buildFeedback('未选中对象', false);
+  }
+
+  extendBuildInteraction(viewport: Point): BuildFeedback {
+    if (this.buildTool === 'fence') {
+      this.extendFenceStrokeAtViewport(viewport);
+      return this.buildFeedback('正在绘制栅栏', true);
+    }
+    return this.updateBuildPointer(viewport);
+  }
+
+  endBuildInteraction(): BuildFeedback {
+    if (this.buildTool === 'fence') {
+      this.endFenceStroke();
+      return this.buildFeedback('栅栏绘制完成', true);
+    }
+    if (this.draggedFacilityId && this.buildHoverCell) {
+      const id = this.draggedFacilityId;
+      const beforeMove = this.facilities.getSnapshot(id);
+      const valid = this.canPlaceFacility(this.buildHoverCell, id);
+      this.draggedFacilityId = null;
+      if (!valid) {
+        this.drawBuildObjectPreview();
+        return this.buildFeedback('移动已取消：目标位置非法', false);
+      }
+      if (
+        beforeMove &&
+        beforeMove.cell.x === this.buildHoverCell.x &&
+        beforeMove.cell.y === this.buildHoverCell.y
+      ) {
+        this.drawBuildObjectPreview();
+        return this.buildFeedback(`已选择 ${id}`, true);
+      }
+      this.facilities.move(id, this.buildHoverCell);
+      const facility = this.facilities.getSnapshot(id);
+      if (facility) {
+        this.buildSelection = {
+          type: 'facility',
+          id,
+          cell: { ...facility.cell },
+        };
+      }
+      this.facilitySignature = '';
+      this.drawFacilities();
+      this.drawBuildObjectPreview();
+      return this.buildFeedback('设施已移动', true);
+    }
+    this.draggedFacilityId = null;
+    return this.buildFeedback('操作完成', true);
+  }
+
+  rotateBuildSelection(): BuildFeedback {
+    if (this.buildSelection?.type !== 'facility') {
+      return this.buildFeedback('请先选择一个设施', false);
+    }
+    this.facilities.rotate(this.buildSelection.id);
+    this.facilitySignature = '';
+    this.drawFacilities();
+    return this.buildFeedback('设施已旋转 90°', true);
+  }
+
+  deleteBuildSelection(): BuildFeedback {
+    if (!this.buildSelection) return this.buildFeedback('没有可删除的对象', false);
+    if (this.buildSelection.type === 'facility') {
+      this.facilities.remove(this.buildSelection.id);
+      this.facilitySignature = '';
+      this.drawFacilities();
+    } else {
+      this.removeFencePost(this.buildSelection.cell);
+      this.drawFences();
+      this.drawNavigationDebug();
+    }
+    this.buildSelection = null;
+    this.draggedFacilityId = null;
+    this.drawBuildObjectPreview();
+    return this.buildFeedback('对象已删除', true);
+  }
+
+  cancelBuildInteraction(): BuildFeedback {
+    this.clearFenceCandidate();
+    this.fenceStroke = null;
+    this.draggedFacilityId = null;
+    this.buildHoverCell = null;
+    this.drawBuildObjectPreview();
+    return this.buildFeedback('已取消当前操作', true);
+  }
+
   beginFenceStrokeAtViewport(viewport: Point): boolean {
     if (this.mode !== 'build') return false;
     const cell = this.viewportToGridCell(viewport);
     if (!cell || this.isRabbitCell(cell)) return false;
 
     const initiallyBlocked = this.fencePosts.has(gridCellKey(cell));
-    if (!initiallyBlocked && !this.navigation.isWalkable(cell)) return false;
+    if (!initiallyBlocked && !this.canPlaceFencePost(cell)) return false;
     if (!initiallyBlocked) {
       this.navigation.setBlocked(cell, true);
       this.fencePosts.set(gridCellKey(cell), { ...cell });
@@ -288,7 +468,7 @@ export class WorldView {
       return;
     }
     const nextIsFence = this.fencePosts.has(gridCellKey(next));
-    if (!nextIsFence && !this.navigation.isWalkable(next)) {
+    if (!nextIsFence && !this.canPlaceFencePost(next)) {
       this.clearFenceCandidate();
       return;
     }
@@ -386,6 +566,123 @@ export class WorldView {
       }
     }
     this.debugLayer.addChildAt(grid, 0);
+  }
+
+  private buildFeedback(message: string, valid: boolean): BuildFeedback {
+    return { message, valid, selected: this.buildSelection !== null };
+  }
+
+  private placeFacility(
+    kind: 'foodBowl' | 'waterBowl',
+    cell: GridCell,
+  ): BuildFeedback {
+    if (!this.canPlaceFacility(cell)) {
+      return this.buildFeedback('该位置重叠、越界或没有可用入口', false);
+    }
+    const prefix = kind === 'foodBowl' ? 'food_bowl' : 'water_bowl';
+    const id = `${prefix}_${String(this.facilityIdCounter).padStart(2, '0')}`;
+    this.facilityIdCounter += 1;
+    const facility = this.facilities.place({ id, kind, cell });
+    this.buildSelection = {
+      type: 'facility',
+      id,
+      cell: { ...facility.cell },
+    };
+    this.facilitySignature = '';
+    this.drawFacilities();
+    this.drawBuildObjectPreview();
+    return this.buildFeedback(`${kind === 'foodBowl' ? '食盆' : '水盆'}已放置`, true);
+  }
+
+  private canPlaceFacility(cell: GridCell, movingId?: string): boolean {
+    if (!this.navigation.isInside(cell) || this.isRabbitCell(cell)) return false;
+    const movingFacility = movingId
+      ? this.facilities.getSnapshot(movingId)
+      : null;
+    const sameCell = Boolean(
+      movingFacility &&
+        movingFacility.cell.x === cell.x &&
+        movingFacility.cell.y === cell.y,
+    );
+    if (!sameCell && !this.navigation.isWalkable(cell)) return false;
+
+    const entranceDirections = [
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+      { x: -1, y: 0 },
+      { x: 0, y: -1 },
+    ];
+    return entranceDirections.some((direction) => {
+      const entrance = { x: cell.x + direction.x, y: cell.y + direction.y };
+      if (!this.navigation.isInside(entrance)) return false;
+      if (
+        movingFacility &&
+        movingFacility.cell.x === entrance.x &&
+        movingFacility.cell.y === entrance.y
+      ) {
+        return true;
+      }
+      return this.navigation.isWalkable(entrance);
+    });
+  }
+
+  private canPlaceFencePost(cell: GridCell): boolean {
+    if (!this.navigation.isWalkable(cell) || this.isRabbitCell(cell)) return false;
+    const directions = [
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+      { x: -1, y: 0 },
+      { x: 0, y: -1 },
+    ];
+    for (const facility of this.facilities.getSnapshots()) {
+      const touchesFacility =
+        Math.abs(facility.cell.x - cell.x) +
+          Math.abs(facility.cell.y - cell.y) ===
+        1;
+      if (!touchesFacility) continue;
+      const alternativeEntrance = directions.some((direction) => {
+        const entrance = {
+          x: facility.cell.x + direction.x,
+          y: facility.cell.y + direction.y,
+        };
+        return (
+          (entrance.x !== cell.x || entrance.y !== cell.y) &&
+          this.navigation.isWalkable(entrance)
+        );
+      });
+      if (!alternativeEntrance) return false;
+    }
+    return true;
+  }
+
+  private drawBuildObjectPreview(): void {
+    this.buildObjectPreview.clear();
+    if (this.mode !== 'build') return;
+
+    if (this.buildSelection) {
+      polygon(
+        this.buildObjectPreview,
+        getTileDiamond(this.buildSelection.cell),
+      ).stroke({ color: 0x4d87d9, alpha: 0.95, width: 4 });
+    }
+
+    const placingFacility =
+      this.buildTool === 'foodBowl' || this.buildTool === 'waterBowl';
+    if (!this.buildHoverCell || (!placingFacility && !this.draggedFacilityId)) {
+      return;
+    }
+    const valid = this.canPlaceFacility(
+      this.buildHoverCell,
+      this.draggedFacilityId ?? undefined,
+    );
+    const color = valid ? 0x5bc47a : 0xd45b5b;
+    polygon(this.buildObjectPreview, getTileDiamond(this.buildHoverCell))
+      .fill({ color, alpha: 0.2 })
+      .stroke({ color, alpha: 0.95, width: 4 });
+    const center = gridToScreen(this.buildHoverCell);
+    this.buildObjectPreview
+      .ellipse(center.x, center.y - 7, 26, 12)
+      .fill({ color, alpha: 0.32 });
   }
 
   private viewportToGridCell(viewport: Point): GridCell | null {
@@ -557,6 +854,14 @@ export class WorldView {
             : 0x77766f,
           alpha: facility.available ? 0.9 : 0.45,
         });
+      const rotationRadians = (facility.rotation * Math.PI) / 180;
+      drawing
+        .moveTo(0, -7)
+        .lineTo(
+          Math.cos(rotationRadians) * 15,
+          -7 + Math.sin(rotationRadians) * 6,
+        )
+        .stroke({ color: 0xffffff, alpha: 0.72, width: 2.5 });
       if (ratio < 0.35 && facility.available) {
         drawing
           .ellipse(0, -7, 12, 4)

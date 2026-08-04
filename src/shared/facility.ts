@@ -8,6 +8,7 @@ export interface FacilityDefinition {
   cell: GridCell;
   capacity?: number;
   maxCapacity?: number;
+  rotation?: number;
 }
 
 export interface FacilitySnapshot {
@@ -17,6 +18,7 @@ export interface FacilitySnapshot {
   capacity: number;
   maxCapacity: number;
   available: boolean;
+  rotation: number;
 }
 
 export interface FacilityTarget {
@@ -39,6 +41,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function normalizeRotation(rotation: number): number {
+  if (!Number.isFinite(rotation)) return 0;
+  return ((Math.round(rotation / 90) * 90) % 360 + 360) % 360;
+}
+
 export class FacilitySystem {
   private readonly navigation: FacilityNavigation;
   private readonly facilities = new Map<string, FacilityRecord>();
@@ -49,7 +56,7 @@ export class FacilitySystem {
     definitions: readonly FacilityDefinition[],
   ) {
     this.navigation = navigation;
-    for (const definition of definitions) this.add(definition);
+    for (const definition of definitions) this.place(definition);
     this.facilityVersion = 0;
   }
 
@@ -67,6 +74,68 @@ export class FacilitySystem {
   getSnapshot(id: string): FacilitySnapshot | null {
     const facility = this.facilities.get(id);
     return facility ? { ...facility, cell: { ...facility.cell } } : null;
+  }
+
+  getAt(cell: GridCell): FacilitySnapshot | null {
+    const facility = [...this.facilities.values()].find(
+      (candidate) =>
+        candidate.cell.x === cell.x && candidate.cell.y === cell.y,
+    );
+    return facility ? { ...facility, cell: { ...facility.cell } } : null;
+  }
+
+  place(definition: FacilityDefinition): FacilitySnapshot {
+    if (!definition.id || this.facilities.has(definition.id)) {
+      throw new TypeError('Facility IDs must be non-empty and unique.');
+    }
+    if (!this.navigation.isWalkable(definition.cell)) {
+      throw new RangeError('Facility cell must be inside and walkable.');
+    }
+    const maxCapacity = definition.maxCapacity ?? 100;
+    if (!Number.isFinite(maxCapacity) || maxCapacity <= 0) {
+      throw new RangeError('Facility maximum capacity must be positive.');
+    }
+    const capacity = clamp(
+      definition.capacity ?? maxCapacity,
+      0,
+      maxCapacity,
+    );
+    this.navigation.setBlocked(definition.cell, true);
+    const facility: FacilityRecord = {
+      id: definition.id,
+      kind: definition.kind,
+      cell: { ...definition.cell },
+      capacity,
+      maxCapacity,
+      available: capacity > 0,
+      rotation: normalizeRotation(definition.rotation ?? 0),
+    };
+    this.facilities.set(definition.id, facility);
+    this.facilityVersion += 1;
+    return { ...facility, cell: { ...facility.cell } };
+  }
+
+  move(id: string, destination: GridCell): boolean {
+    const facility = this.facilities.get(id);
+    if (!facility) return false;
+    if (facility.cell.x === destination.x && facility.cell.y === destination.y) {
+      return true;
+    }
+    if (!this.navigation.isWalkable(destination)) return false;
+
+    this.navigation.setBlocked(facility.cell, false);
+    this.navigation.setBlocked(destination, true);
+    facility.cell = { ...destination };
+    this.facilityVersion += 1;
+    return true;
+  }
+
+  rotate(id: string, quarterTurns = 1): boolean {
+    const facility = this.facilities.get(id);
+    if (!facility || !Number.isInteger(quarterTurns)) return false;
+    facility.rotation = normalizeRotation(facility.rotation + quarterTurns * 90);
+    this.facilityVersion += 1;
+    return true;
   }
 
   isUsable(id: string, kind?: FacilityKind): boolean {
@@ -148,31 +217,4 @@ export class FacilitySystem {
     return true;
   }
 
-  private add(definition: FacilityDefinition): void {
-    if (!definition.id || this.facilities.has(definition.id)) {
-      throw new TypeError('Facility IDs must be non-empty and unique.');
-    }
-    if (!this.navigation.isWalkable(definition.cell)) {
-      throw new RangeError('Facility cell must be inside and walkable.');
-    }
-    const maxCapacity = definition.maxCapacity ?? 100;
-    if (!Number.isFinite(maxCapacity) || maxCapacity <= 0) {
-      throw new RangeError('Facility maximum capacity must be positive.');
-    }
-    const capacity = clamp(
-      definition.capacity ?? maxCapacity,
-      0,
-      maxCapacity,
-    );
-    this.navigation.setBlocked(definition.cell, true);
-    this.facilities.set(definition.id, {
-      id: definition.id,
-      kind: definition.kind,
-      cell: { ...definition.cell },
-      capacity,
-      maxCapacity,
-      available: capacity > 0,
-    });
-    this.facilityVersion += 1;
-  }
 }

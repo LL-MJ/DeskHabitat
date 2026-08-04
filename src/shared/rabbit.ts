@@ -153,6 +153,7 @@ export class RabbitModel {
   private transitionReason = 'spawned';
   private stuckSeconds = 0;
   private repathCount = 0;
+  private lastFacilityVersion = 0;
 
   constructor(options: RabbitModelOptions) {
     if (!Number.isInteger(options.columns) || options.columns < 2) {
@@ -175,6 +176,7 @@ export class RabbitModel {
       throw new RangeError('Rabbit world and navigation grid sizes must match.');
     }
     this.facilities = options.facilities ?? null;
+    this.lastFacilityVersion = this.facilities?.version ?? 0;
     this.speed = options.speed ?? 0.9;
     if (!Number.isFinite(this.speed) || this.speed <= 0) {
       throw new RangeError('Rabbit speed must be positive.');
@@ -214,6 +216,9 @@ export class RabbitModel {
     this.updatePassiveNeeds(stepSeconds);
     if (this.navigation.version !== this.pathVersion) {
       this.handleNavigationChange();
+    }
+    if ((this.facilities?.version ?? 0) !== this.lastFacilityVersion) {
+      this.handleFacilityChange();
     }
     this.stateElapsedSeconds += stepSeconds;
 
@@ -473,6 +478,26 @@ export class RabbitModel {
       }
     }
     this.pathVersion = this.navigation.version;
+  }
+
+  private handleFacilityChange(): void {
+    this.lastFacilityVersion = this.facilities?.version ?? 0;
+    if (
+      !this.targetFacility ||
+      ![
+        'seekFood',
+        'seekWater',
+        'eat',
+        'drink',
+      ].includes(this.state)
+    ) {
+      return;
+    }
+    const kind = this.targetFacility.kind;
+    this.repathCount += 1;
+    if (!this.beginSeeking(kind, 'facility_version_changed')) {
+      this.beginIdle('facility_change_no_target');
+    }
   }
 
   private recoverFromBlockedCell(): boolean {

@@ -6,7 +6,7 @@ A tiny animated animal habitat living on your desktop.
 
 ## 当前阶段
 
-项目已完成 M0 至 M4；M5 饥饿、口渴、精力、设施容量和目标替换闭环已进入验收阶段。
+项目已完成 M0 至 M5；M6 工具栏、放置预览、设施移动旋转删除及布局校验已进入验收阶段。
 
 当前技术栈：
 
@@ -71,3 +71,4 @@ npm run dist:win   # 生成 Windows NSIS 安装包
 - [M3 兔子与基础模拟人工验收清单](./docs/M3_MANUAL_TEST.md)
 - [M4 导航与栅栏人工验收清单](./docs/M4_MANUAL_TEST.md)
 - [M5 需求与设施闭环人工验收清单](./docs/M5_MANUAL_TEST.md)
+- [M6 布置模式人工验收清单](./docs/M6_MANUAL_TEST.md)

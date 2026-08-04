@@ -4,7 +4,7 @@ import { Application } from 'pixi.js';
 import { normalizePixelRatio } from '../shared/runtime';
 import type { WindowMode, WindowState } from '../shared/window';
 import './styles/global.css';
-import { WorldView } from './world/WorldView';
+import { WorldView, type BuildFeedback, type BuildTool } from './world/WorldView';
 
 function renderWindowState(state: WindowState): void {
   const status = document.querySelector<HTMLElement>('#status');
@@ -23,7 +23,7 @@ function renderWindowState(state: WindowState): void {
   };
   const buildHint =
     state.mode === 'build'
-      ? ' · 按住连续绘制（候选格短暂停留后确认），单击已有栅栏删除'
+      ? ' · 使用左下角工具栏布置栖息地'
       : '';
   status.textContent = `${modeLabels[state.mode]} · ${state.display.label} · ${state.layer === 'overlay' ? '置顶层' : '桌面层'}${buildHint}`;
 
@@ -62,6 +62,27 @@ async function bootstrap(): Promise<void> {
   world.setMode(state.mode);
   document.title = `DeskHabitat ${version}`;
   renderWindowState(state);
+  const buildMessage = document.querySelector<HTMLElement>('#build-message');
+  const showBuildFeedback = (feedback: BuildFeedback) => {
+    if (buildMessage) {
+      buildMessage.textContent = feedback.message;
+      buildMessage.dataset['valid'] = String(feedback.valid);
+    }
+    for (const button of document.querySelectorAll<HTMLButtonElement>(
+      '[data-build-action="rotate"], [data-build-action="delete"]',
+    )) {
+      button.disabled = !feedback.selected;
+    }
+  };
+  const activateBuildTool = (tool: BuildTool) => {
+    for (const button of document.querySelectorAll<HTMLButtonElement>(
+      '[data-build-tool]',
+    )) {
+      button.dataset['active'] = String(button.dataset['buildTool'] === tool);
+    }
+    showBuildFeedback(world.setBuildTool(tool));
+  };
+  activateBuildTool('select');
   const pointerPosition = (event: PointerEvent) => {
     const bounds = pixi.canvas.getBoundingClientRect();
     return {
@@ -71,23 +92,62 @@ async function bootstrap(): Promise<void> {
   };
   pixi.canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
-    if (world.beginFenceStrokeAtViewport(pointerPosition(event))) {
+    const feedback = world.beginBuildInteraction(pointerPosition(event));
+    showBuildFeedback(feedback);
+    if (feedback.valid) {
       pixi.canvas.setPointerCapture(event.pointerId);
       event.preventDefault();
     }
   });
   pixi.canvas.addEventListener('pointermove', (event) => {
-    if ((event.buttons & 1) === 0) return;
-    world.extendFenceStrokeAtViewport(pointerPosition(event));
+    const position = pointerPosition(event);
+    const feedback =
+      (event.buttons & 1) === 0
+        ? world.updateBuildPointer(position)
+        : world.extendBuildInteraction(position);
+    showBuildFeedback(feedback);
   });
   pixi.canvas.addEventListener('pointerup', (event) => {
-    world.endFenceStroke();
+    showBuildFeedback(world.endBuildInteraction());
     if (pixi.canvas.hasPointerCapture(event.pointerId)) {
       pixi.canvas.releasePointerCapture(event.pointerId);
     }
   });
   pixi.canvas.addEventListener('pointercancel', () => {
-    world.endFenceStroke();
+    showBuildFeedback(world.cancelBuildInteraction());
+  });
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    '[data-build-tool]',
+  )) {
+    button.addEventListener('click', () => {
+      activateBuildTool(button.dataset['buildTool'] as BuildTool);
+    });
+  }
+  document
+    .querySelector<HTMLButtonElement>('[data-build-action="rotate"]')
+    ?.addEventListener('click', () => {
+      showBuildFeedback(world.rotateBuildSelection());
+    });
+  document
+    .querySelector<HTMLButtonElement>('[data-build-action="delete"]')
+    ?.addEventListener('click', () => {
+      showBuildFeedback(world.deleteBuildSelection());
+    });
+  document
+    .querySelector<HTMLButtonElement>('[data-build-action="cancel"]')
+    ?.addEventListener('click', () => {
+      showBuildFeedback(world.cancelBuildInteraction());
+    });
+  window.addEventListener('keydown', (event) => {
+    if (document.body.dataset['mode'] !== 'build') return;
+    if (event.key === 'Delete') {
+      showBuildFeedback(world.deleteBuildSelection());
+    } else if (event.key === 'Escape') {
+      showBuildFeedback(world.cancelBuildInteraction());
+    } else if (event.key.toLowerCase() === 'r') {
+      showBuildFeedback(world.rotateBuildSelection());
+    }
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>(

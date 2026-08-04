@@ -17,6 +17,20 @@
         <button type="button" data-mode="build">布置模式</button>
         <button type="button" data-mode="paused">暂停</button>
       </nav>
+      <aside id="build-toolbar" aria-label="布置工具栏">
+        <div class="build-tools" role="group" aria-label="布置工具">
+          <button type="button" data-build-tool="select">选择</button>
+          <button type="button" data-build-tool="fence">栅栏</button>
+          <button type="button" data-build-tool="foodBowl">食盆</button>
+          <button type="button" data-build-tool="waterBowl">水盆</button>
+        </div>
+        <div class="build-actions" role="group" aria-label="对象操作">
+          <button type="button" data-build-action="rotate">旋转</button>
+          <button type="button" data-build-action="delete">删除</button>
+          <button type="button" data-build-action="cancel">取消</button>
+        </div>
+        <div id="build-message" role="status">选择工具开始布置</div>
+      </aside>
     </main>
     <script type="module" src="/main.ts"></script>
   </body>

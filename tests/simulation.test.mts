@@ -194,6 +194,30 @@ describe('rabbit simulation', () => {
     assert.equal(replacement.state, 'seekFood');
   });
 
+  it('replans when a selected facility is moved during build mode', () => {
+    const navigation = new NavigationGrid({ columns: 6, rows: 6 });
+    const facilities = new FacilitySystem(navigation, [
+      { id: 'food', kind: 'foodBowl', cell: { x: 5, y: 5 } },
+    ]);
+    const rabbit = new RabbitModel({
+      columns: 6,
+      rows: 6,
+      navigation,
+      facilities,
+      initialNeeds: { hunger: 90, thirst: 0, energy: 100 },
+    });
+    rabbit.step(0.1);
+    const oldTarget = rabbit.getSnapshot().target;
+    assert.equal(facilities.move('food', { x: 0, y: 0 }), true);
+    rabbit.step(0.1);
+
+    const replanned = rabbit.getSnapshot();
+    assert.equal(replanned.state, 'seekFood');
+    assert.equal(replanned.targetFacilityId, 'food');
+    assert.notDeepEqual(replanned.target, oldTarget);
+    assert.ok(replanned.repathCount >= 1);
+  });
+
   it('rests in place when energy is low', () => {
     const rabbit = new RabbitModel({
       columns: 5,

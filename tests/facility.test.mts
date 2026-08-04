@@ -73,4 +73,27 @@ describe('facility targets and capacity', () => {
     assert.equal(facilities.remove('water'), true);
     assert.equal(navigation.isWalkable({ x: 2, y: 2 }), true);
   });
+
+  it('places, moves, and rotates facilities without overlapping occupancy', () => {
+    const navigation = new NavigationGrid({ columns: 4, rows: 4 });
+    const facilities = new FacilitySystem(navigation, []);
+    facilities.place({
+      id: 'food',
+      kind: 'foodBowl',
+      cell: { x: 1, y: 1 },
+    });
+    facilities.place({
+      id: 'water',
+      kind: 'waterBowl',
+      cell: { x: 2, y: 2 },
+    });
+
+    assert.equal(facilities.move('food', { x: 2, y: 2 }), false);
+    assert.equal(facilities.move('food', { x: 1, y: 2 }), true);
+    assert.equal(navigation.isWalkable({ x: 1, y: 1 }), true);
+    assert.equal(navigation.isWalkable({ x: 1, y: 2 }), false);
+    assert.equal(facilities.rotate('food'), true);
+    assert.equal(facilities.getSnapshot('food')?.rotation, 90);
+    assert.equal(facilities.getAt({ x: 1, y: 2 })?.id, 'food');
+  });
 });
