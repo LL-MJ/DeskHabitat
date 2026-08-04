@@ -28,7 +28,8 @@ export interface WindowState {
 
 export type AppCommand =
   | { type: 'state-changed'; state: WindowState }
-  | { type: 'display-changed'; display: DisplayInfo };
+  | { type: 'display-changed'; display: DisplayInfo }
+  | { type: 'save-requested' };
 
 export function isWindowMode(value: unknown): value is WindowMode {
   return typeof value === 'string' && WINDOW_MODES.includes(value as WindowMode);

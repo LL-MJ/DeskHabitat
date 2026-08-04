@@ -19,9 +19,13 @@ import {
   fenceConnectionKey,
   rasterizeFenceStroke,
 } from '../../shared/fence';
-import { FacilitySystem } from '../../shared/facility';
+import {
+  FacilitySystem,
+  type FacilityDefinition,
+} from '../../shared/facility';
 import { NavigationGrid, type GridCell } from '../../shared/navigation';
 import { RabbitModel } from '../../shared/rabbit';
+import type { SaveSnapshot } from '../../shared/save';
 import { FixedStepClock } from '../../shared/simulation';
 import type { WindowMode } from '../../shared/window';
 import { RabbitView } from './RabbitView';
@@ -30,6 +34,10 @@ export interface WorldViewOptions {
   columns?: number;
   rows?: number;
   debug?: boolean;
+  initialSnapshot?: SaveSnapshot;
+  offlineSeconds?: number;
+  onDirty?: () => void;
+  maxFps?: 30 | 60;
 }
 
 const GROUND_COLORS = [0x78a96f, 0x83b578] as const;
@@ -121,6 +129,10 @@ export class WorldView {
   private mode: WindowMode = 'life';
   private simulationSteps = 0;
   private facilityRenderElapsed = 0;
+  private gameTimeSeconds = 0;
+  private readonly worldId: string;
+  private readonly onDirty: (() => void) | null;
+  private readonly maxLifeFps: 30 | 60;
   private elapsedMilliseconds = 0;
   private renderedFrames = 0;
 
@@ -128,9 +140,14 @@ export class WorldView {
     private readonly app: Application,
     options: WorldViewOptions = {},
   ) {
-    this.columns = options.columns ?? 8;
-    this.rows = options.rows ?? 6;
+    const saved = options.initialSnapshot;
+    this.columns = saved?.columns ?? options.columns ?? 8;
+    this.rows = saved?.rows ?? options.rows ?? 6;
     this.debug = options.debug ?? false;
+    this.worldId = saved?.worldId ?? 'default-habitat';
+    this.gameTimeSeconds = saved?.gameTimeSeconds ?? 0;
+    this.onDirty = options.onDirty ?? null;
+    this.maxLifeFps = options.maxFps ?? 30;
     this.objectLayer.sortableChildren = true;
     this.root.addChild(
       this.shadowLayer,
@@ -146,21 +163,28 @@ export class WorldView {
     this.previewLayer.addChild(this.buildObjectPreview);
 
     this.drawGround();
+    const initialFencePosts = saved?.fencePosts ?? DEFAULT_FENCES;
     this.navigation = new NavigationGrid({
       columns: this.columns,
       rows: this.rows,
-      blocked: DEFAULT_FENCES.filter(
+      blocked: initialFencePosts.filter(
         (cell) => cell.x < this.columns && cell.y < this.rows,
       ),
     });
-    for (const cell of DEFAULT_FENCES) {
+    for (const cell of initialFencePosts) {
       if (cell.x < this.columns && cell.y < this.rows) {
         this.fencePosts.set(gridCellKey(cell), { ...cell });
       }
     }
-    for (let index = 1; index < DEFAULT_FENCES.length; index += 1) {
-      const previous = DEFAULT_FENCES[index - 1];
-      const current = DEFAULT_FENCES[index];
+    const initialConnections =
+      saved?.fenceConnections ??
+      DEFAULT_FENCES.slice(1).map((cell, index) => ({
+        a: DEFAULT_FENCES[index]!,
+        b: cell,
+      }));
+    for (const connection of initialConnections) {
+      const previous = connection.a;
+      const current = connection.b;
       if (
         previous &&
         current &&
@@ -170,7 +194,7 @@ export class WorldView {
         this.addFenceConnection(previous, current);
       }
     }
-    this.facilities = new FacilitySystem(this.navigation, [
+    const initialFacilities: readonly FacilityDefinition[] = saved?.facilities ?? [
       {
         id: 'food_bowl_01',
         kind: 'foodBowl',
@@ -189,14 +213,34 @@ export class WorldView {
         cell: { x: this.columns - 1, y: 0 },
         capacity: 100,
       },
-    ]);
+    ];
+    this.facilities = new FacilitySystem(this.navigation, initialFacilities);
+    this.facilityIdCounter = Math.max(
+      3,
+      ...this.facilities.getSnapshots().map((facility) => {
+        const suffix = /_(\d+)$/.exec(facility.id)?.[1];
+        return suffix ? Number(suffix) + 1 : 3;
+      }),
+    );
     this.rabbit = new RabbitModel({
       columns: this.columns,
       rows: this.rows,
       navigation: this.navigation,
       facilities: this.facilities,
-      initialNeeds: { hunger: 64, thirst: 69, energy: 78 },
+      initialNeeds: saved?.rabbit.needs ?? {
+        hunger: 64,
+        thirst: 69,
+        energy: 78,
+      },
+      ...(saved
+        ? {
+            initialPosition: saved.rabbit.position,
+            initialFacing: saved.rabbit.facing,
+            initialState: saved.rabbit.state,
+          }
+        : {}),
     });
+    this.rabbit.applyOfflineProgress(options.offlineSeconds ?? 0);
     this.rabbitView = new RabbitView();
     this.objectLayer.addChild(this.rabbitView.root);
     this.drawFences();
@@ -211,7 +255,7 @@ export class WorldView {
 
   setMode(mode: WindowMode): void {
     this.mode = mode;
-    this.app.ticker.maxFPS = mode === 'build' ? 60 : 30;
+    this.app.ticker.maxFPS = mode === 'build' ? 60 : this.maxLifeFps;
     if (mode !== 'life') this.simulationClock.reset();
     if (mode !== 'build') {
       this.clearFenceCandidate();
@@ -230,6 +274,38 @@ export class WorldView {
     const transform = fitWorldToViewport(bounds, { width, height });
     this.root.position.set(transform.x, transform.y);
     this.root.scale.set(transform.scale);
+  }
+
+  createSaveSnapshot(): SaveSnapshot {
+    const rabbit = this.rabbit.getSnapshot();
+    return {
+      worldId: this.worldId,
+      columns: this.columns,
+      rows: this.rows,
+      rabbit: {
+        position: { ...rabbit.position },
+        needs: { ...rabbit.needs },
+        state: rabbit.state,
+        facing: rabbit.facing,
+      },
+      facilities: this.facilities.getSnapshots().map((facility) => ({
+        id: facility.id,
+        kind: facility.kind,
+        cell: { ...facility.cell },
+        capacity: facility.capacity,
+        maxCapacity: facility.maxCapacity,
+        rotation: facility.rotation,
+      })),
+      fencePosts: [...this.fencePosts.values()].map((cell) => ({ ...cell })),
+      fenceConnections: [...this.fenceConnections.values()].map(
+        (connection) => ({
+          a: { ...connection.a },
+          b: { ...connection.b },
+        }),
+      ),
+      gameTimeSeconds: this.gameTimeSeconds,
+      lastOnlineAt: new Date().toISOString(),
+    };
   }
 
   setBuildTool(tool: BuildTool): BuildFeedback {
@@ -346,6 +422,7 @@ export class WorldView {
       this.facilitySignature = '';
       this.drawFacilities();
       this.drawBuildObjectPreview();
+      this.markDirty();
       return this.buildFeedback('设施已移动', true);
     }
     this.draggedFacilityId = null;
@@ -359,6 +436,7 @@ export class WorldView {
     this.facilities.rotate(this.buildSelection.id);
     this.facilitySignature = '';
     this.drawFacilities();
+    this.markDirty();
     return this.buildFeedback('设施已旋转 90°', true);
   }
 
@@ -376,6 +454,7 @@ export class WorldView {
     this.buildSelection = null;
     this.draggedFacilityId = null;
     this.drawBuildObjectPreview();
+    this.markDirty();
     return this.buildFeedback('对象已删除', true);
   }
 
@@ -446,6 +525,7 @@ export class WorldView {
       this.drawNavigationDebug();
     }
     this.fenceStroke = null;
+    this.markDirty();
   }
 
   private scheduleFenceCandidate(): void {
@@ -572,6 +652,10 @@ export class WorldView {
     return { message, valid, selected: this.buildSelection !== null };
   }
 
+  private markDirty(): void {
+    this.onDirty?.();
+  }
+
   private placeFacility(
     kind: 'foodBowl' | 'waterBowl',
     cell: GridCell,
@@ -591,6 +675,7 @@ export class WorldView {
     this.facilitySignature = '';
     this.drawFacilities();
     this.drawBuildObjectPreview();
+    this.markDirty();
     return this.buildFeedback(`${kind === 'foodBowl' ? '食盆' : '水盆'}已放置`, true);
   }
 
@@ -954,7 +1039,10 @@ export class WorldView {
 
     this.simulationSteps += this.simulationClock.advance(
       ticker.deltaMS,
-      (stepSeconds) => this.rabbit.step(stepSeconds),
+      (stepSeconds) => {
+        this.rabbit.step(stepSeconds);
+        this.gameTimeSeconds += stepSeconds;
+      },
     );
     this.rabbitView.render(this.rabbit.getSnapshot(), ticker.deltaMS);
     this.drawNavigationDebug();

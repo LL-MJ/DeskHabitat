@@ -12,6 +12,7 @@ import {
 import path from 'node:path';
 
 import { IPC_CHANNELS } from '../shared/ipc';
+import { isSaveSnapshot, type AppSettings } from '../shared/save';
 import {
   defaultPointerPassthrough,
   isWindowMode,
@@ -21,6 +22,7 @@ import {
   type WindowMode,
   type WindowState,
 } from '../shared/window';
+import { PersistenceService } from './persistence';
 
 const DEBUG_WINDOW_SIZE = { width: 900, height: 600 };
 const TRAY_ICON_DATA_URL =
@@ -33,8 +35,12 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let currentMode: WindowMode = 'life';
 let currentLayer: WindowLayer = 'overlay';
+let targetDisplayId: number | null = null;
 let pointerPassthrough = true;
 let isQuitting = false;
+let persistence: PersistenceService | null = null;
+let quitSaveTimer: NodeJS.Timeout | null = null;
+let quitSavePending = false;
 
 const debugWindow =
   !app.isPackaged && process.env['DESK_HABITAT_DESKTOP_WINDOW'] !== '1';
@@ -49,10 +55,17 @@ function toDisplayInfo(display: Display): DisplayInfo {
   };
 }
 
+function getTargetDisplay(): Display {
+  return (
+    screen.getAllDisplays().find((display) => display.id === targetDisplayId) ??
+    screen.getPrimaryDisplay()
+  );
+}
+
 function getDisplayInfo(): DisplayInfo {
   const display = mainWindow
     ? screen.getDisplayMatching(mainWindow.getBounds())
-    : screen.getPrimaryDisplay();
+    : getTargetDisplay();
   return toDisplayInfo(display);
 }
 
@@ -102,7 +115,32 @@ function setMode(mode: WindowMode): WindowState {
 
 function applyLayer(): void {
   if (!mainWindow) return;
-  mainWindow.setAlwaysOnTop(currentLayer === 'overlay', 'floating');
+  mainWindow.setAlwaysOnTop(
+    !debugWindow && currentLayer === 'overlay',
+    'floating',
+  );
+}
+
+function finishApplicationQuit(): void {
+  if (quitSaveTimer) clearTimeout(quitSaveTimer);
+  quitSaveTimer = null;
+  quitSavePending = false;
+  isQuitting = true;
+  app.quit();
+}
+
+function requestApplicationQuit(): void {
+  if (quitSavePending || isQuitting) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    finishApplicationQuit();
+    return;
+  }
+  quitSavePending = true;
+  sendCommand({ type: 'save-requested' });
+  quitSaveTimer = setTimeout(() => {
+    console.warn('DeskHabitat quit save timed out; continuing shutdown.');
+    finishApplicationQuit();
+  }, 1_500);
 }
 
 function setLayer(layer: WindowLayer): void {
@@ -110,20 +148,23 @@ function setLayer(layer: WindowLayer): void {
   applyLayer();
   rebuildTrayMenu();
   broadcastState();
+  void persistence?.updateSettings({ layer }).catch((error: unknown) => {
+    console.warn('DeskHabitat failed to persist window layer.', error);
+  });
 }
 
 function updateWindowBounds(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   if (debugWindow) {
-    const { workArea } = screen.getPrimaryDisplay();
+    const { workArea } = getTargetDisplay();
     mainWindow.setBounds({
       x: workArea.x + Math.round((workArea.width - DEBUG_WINDOW_SIZE.width) / 2),
       y: workArea.y + Math.round((workArea.height - DEBUG_WINDOW_SIZE.height) / 2),
       ...DEBUG_WINDOW_SIZE,
     });
   } else {
-    mainWindow.setBounds(screen.getPrimaryDisplay().workArea);
+    mainWindow.setBounds(getTargetDisplay().workArea);
   }
 
   const display = getDisplayInfo();
@@ -157,6 +198,15 @@ function rebuildTrayMenu(): void {
     },
     { type: 'separator' },
     {
+      label: '目标显示器',
+      submenu: screen.getAllDisplays().map((display) => ({
+        label: toDisplayInfo(display).label,
+        type: 'radio' as const,
+        checked: getTargetDisplay().id === display.id,
+        click: () => setTargetDisplay(display.id),
+      })),
+    },
+    {
       label: '置于普通窗口上方',
       type: 'checkbox',
       checked: currentLayer === 'overlay',
@@ -183,10 +233,7 @@ function rebuildTrayMenu(): void {
     { type: 'separator' },
     {
       label: '退出 DeskHabitat',
-      click: () => {
-        isQuitting = true;
-        app.quit();
-      },
+      click: requestApplicationQuit,
     },
   ]);
 
@@ -208,6 +255,36 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.app.getVersion, () => app.getVersion());
   ipcMain.handle(IPC_CHANNELS.window.getState, () => getWindowState());
   ipcMain.handle(IPC_CHANNELS.window.getDisplayInfo, () => getDisplayInfo());
+  ipcMain.handle(IPC_CHANNELS.save.load, async () => {
+    if (!persistence) throw new Error('Persistence service is not ready.');
+    return persistence.loadSave();
+  });
+  ipcMain.handle(
+    IPC_CHANNELS.save.write,
+    async (_event, snapshot: unknown) => {
+      if (!persistence) throw new Error('Persistence service is not ready.');
+      if (!isSaveSnapshot(snapshot)) {
+        throw new TypeError('Invalid DeskHabitat save snapshot.');
+      }
+      return persistence.writeSave(snapshot, app.getVersion());
+    },
+  );
+  ipcMain.handle(IPC_CHANNELS.settings.load, async () => {
+    if (!persistence) throw new Error('Persistence service is not ready.');
+    return persistence.loadSettings();
+  });
+  ipcMain.handle(
+    IPC_CHANNELS.settings.update,
+    async (_event, patch: unknown) => {
+      if (!persistence) throw new Error('Persistence service is not ready.');
+      if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+        throw new TypeError('Invalid DeskHabitat settings patch.');
+      }
+      return persistence.updateSettings(
+        patch as Partial<Omit<AppSettings, 'schemaVersion'>>,
+      );
+    },
+  );
   ipcMain.handle(IPC_CHANNELS.window.setMode, (_event, mode: unknown) => {
     if (!isWindowMode(mode)) throw new TypeError('Invalid DeskHabitat window mode.');
     return setMode(mode);
@@ -225,6 +302,21 @@ function registerIpcHandlers(): void {
     console.info('DeskHabitat renderer ready.');
     broadcastState();
   });
+  ipcMain.on(IPC_CHANNELS.lifecycle.saveComplete, () => {
+    if (quitSavePending) finishApplicationQuit();
+  });
+}
+
+function setTargetDisplay(displayId: number): void {
+  if (!screen.getAllDisplays().some((display) => display.id === displayId)) return;
+  targetDisplayId = displayId;
+  void persistence
+    ?.updateSettings({ targetDisplayId: displayId })
+    .catch((error: unknown) => {
+      console.warn('DeskHabitat failed to persist target display.', error);
+    });
+  updateWindowBounds();
+  rebuildTrayMenu();
 }
 
 function registerDisplayListeners(): void {
@@ -237,7 +329,7 @@ function registerDisplayListeners(): void {
 async function createMainWindow(): Promise<BrowserWindow> {
   const initialBounds = debugWindow
     ? DEBUG_WINDOW_SIZE
-    : screen.getPrimaryDisplay().workArea;
+    : getTargetDisplay().workArea;
   const window = new BrowserWindow({
     ...initialBounds,
     ...(debugWindow ? { minWidth: 640, minHeight: 480 } : {}),
@@ -262,6 +354,17 @@ async function createMainWindow(): Promise<BrowserWindow> {
   });
 
   mainWindow = window;
+  if (!debugWindow) {
+    // Windows may retain an opaque DWM backdrop for a frameless window even
+    // when Chromium's guest page is transparent. Disable that backdrop and
+    // explicitly keep the native surface transparent.
+    try {
+      window.setBackgroundMaterial('none');
+    } catch (error: unknown) {
+      console.warn('DeskHabitat could not disable the Windows backdrop.', error);
+    }
+    window.setBackgroundColor('rgba(0, 0, 0, 0)');
+  }
   updateWindowBounds();
   applyLayer();
   window.setIgnoreMouseEvents(true, { forward: true });
@@ -284,7 +387,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });
-  window.once('ready-to-show', () => window.showInactive());
+  window.once('ready-to-show', () => {
+    if (!debugWindow) window.setBackgroundColor('rgba(0, 0, 0, 0)');
+    window.showInactive();
+  });
 
   await window.loadFile(path.join(__dirname, '../renderer/index.html'));
   return window;
@@ -305,6 +411,10 @@ if (!hasSingleInstanceLock) {
   app
     .whenReady()
     .then(async () => {
+      persistence = new PersistenceService(app.getPath('userData'));
+      const settings = await persistence.loadSettings();
+      currentLayer = settings.layer;
+      targetDisplayId = settings.targetDisplayId;
       registerIpcHandlers();
       registerDisplayListeners();
       createTray();

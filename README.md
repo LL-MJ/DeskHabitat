@@ -6,7 +6,7 @@ A tiny animated animal habitat living on your desktop.
 
 ## 当前阶段
 
-项目已完成 M0 至 M5；M6 工具栏、放置预览、设施移动旋转删除及布局校验已进入验收阶段。
+项目已完成 M0 至 M6；M7 版本化存档、设置、备份恢复、退出保存及有限离线结算已进入验收阶段。
 
 当前技术栈：
 
@@ -72,3 +72,4 @@ npm run dist:win   # 生成 Windows NSIS 安装包
 - [M4 导航与栅栏人工验收清单](./docs/M4_MANUAL_TEST.md)
 - [M5 需求与设施闭环人工验收清单](./docs/M5_MANUAL_TEST.md)
 - [M6 布置模式人工验收清单](./docs/M6_MANUAL_TEST.md)
+- [M7 存档、设置与恢复人工验收清单](./docs/M7_MANUAL_TEST.md)

@@ -64,6 +64,9 @@ export interface RabbitModelOptions {
   navigation?: RabbitNavigation;
   facilities?: RabbitFacilities;
   initialNeeds?: Partial<RabbitNeeds>;
+  initialPosition?: Point;
+  initialFacing?: RabbitFacing;
+  initialState?: RabbitState;
 }
 
 const HUNGER_SEEK_THRESHOLD = 70;
@@ -182,16 +185,30 @@ export class RabbitModel {
       throw new RangeError('Rabbit speed must be positive.');
     }
 
-    this.position = {
-      x: Math.floor((this.columns - 1) / 2),
-      y: Math.floor((this.rows - 1) / 2),
-    };
+    this.position = options.initialPosition
+      ? {
+          x: clamp(options.initialPosition.x, 0, this.columns - 1),
+          y: clamp(options.initialPosition.y, 0, this.rows - 1),
+        }
+      : {
+          x: Math.floor((this.columns - 1) / 2),
+          y: Math.floor((this.rows - 1) / 2),
+        };
+    this.facing = options.initialFacing ?? 'south';
+    this.state = options.initialState ?? 'idle';
     this.needs = {
       hunger: clamp(options.initialNeeds?.hunger ?? 40, 0, 100),
       thirst: clamp(options.initialNeeds?.thirst ?? 40, 0, 100),
       energy: clamp(options.initialNeeds?.energy ?? 80, 0, 100),
     };
     this.recoverFromBlockedCell();
+  }
+
+  applyOfflineProgress(seconds: number): void {
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    this.needs.hunger = clamp(this.needs.hunger + 0.55 * seconds, 0, 100);
+    this.needs.thirst = clamp(this.needs.thirst + 0.75 * seconds, 0, 100);
+    this.needs.energy = clamp(this.needs.energy - 0.25 * seconds, 0, 100);
   }
 
   getSnapshot(): RabbitSnapshot {

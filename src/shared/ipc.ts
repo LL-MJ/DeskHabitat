@@ -4,6 +4,12 @@ import type {
   WindowMode,
   WindowState,
 } from './window';
+import type {
+  AppSettings,
+  SaveLoadResult,
+  SaveSnapshot,
+  SaveWriteResult,
+} from './save';
 
 export const IPC_CHANNELS = {
   app: {
@@ -15,11 +21,20 @@ export const IPC_CHANNELS = {
     setMode: 'desk-habitat:window:set-mode',
     setPointerPassthrough: 'desk-habitat:window:set-pointer-passthrough',
   },
+  save: {
+    load: 'desk-habitat:save:load',
+    write: 'desk-habitat:save:write',
+  },
+  settings: {
+    load: 'desk-habitat:settings:load',
+    update: 'desk-habitat:settings:update',
+  },
   events: {
     command: 'desk-habitat:events:command',
   },
   lifecycle: {
     rendererReady: 'desk-habitat:lifecycle:renderer-ready',
+    saveComplete: 'desk-habitat:lifecycle:save-complete',
   },
 } as const;
 
@@ -33,10 +48,21 @@ export interface DeskHabitatApi {
     setMode(mode: WindowMode): Promise<WindowState>;
     setPointerPassthrough(enabled: boolean): Promise<WindowState>;
   };
+  save: {
+    load(): Promise<SaveLoadResult>;
+    write(snapshot: SaveSnapshot): Promise<SaveWriteResult>;
+  };
+  settings: {
+    load(): Promise<AppSettings>;
+    update(
+      patch: Partial<Omit<AppSettings, 'schemaVersion'>>,
+    ): Promise<AppSettings>;
+  };
   events: {
     onCommand(listener: (command: AppCommand) => void): () => void;
   };
   lifecycle: {
     rendererReady(): void;
+    saveComplete(): void;
   };
 }

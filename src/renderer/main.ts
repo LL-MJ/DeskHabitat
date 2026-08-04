@@ -2,6 +2,7 @@ import 'pixi.js/unsafe-eval';
 import { Application } from 'pixi.js';
 
 import { normalizePixelRatio } from '../shared/runtime';
+import { calculateOfflineSeconds } from '../shared/save';
 import type { WindowMode, WindowState } from '../shared/window';
 import './styles/global.css';
 import { WorldView, type BuildFeedback, type BuildTool } from './world/WorldView';
@@ -54,11 +55,50 @@ async function bootstrap(): Promise<void> {
   pixi.canvas.setAttribute('aria-hidden', 'true');
   root.prepend(pixi.canvas);
 
-  const [version, state] = await Promise.all([
+  const [version, state, saveLoad, settings] = await Promise.all([
     window.deskHabitat.app.getVersion(),
     window.deskHabitat.window.getState(),
+    window.deskHabitat.save.load(),
+    window.deskHabitat.settings.load(),
   ]);
-  const world = new WorldView(pixi, { debug: state.debugWindow });
+  if (saveLoad.warning) console.warn(saveLoad.warning);
+
+  let saveTimer: number | null = null;
+  let saveDirty = false;
+  let saveQueue = Promise.resolve();
+  const saveNow = (): Promise<void> => {
+    if (saveTimer !== null) window.clearTimeout(saveTimer);
+    saveTimer = null;
+    const snapshot = world.createSaveSnapshot();
+    saveDirty = false;
+    saveQueue = saveQueue
+      .then(async () => {
+        await window.deskHabitat.save.write(snapshot);
+      })
+      .catch((error: unknown) => {
+        saveDirty = true;
+        console.error('DeskHabitat failed to save.', error);
+      });
+    return saveQueue;
+  };
+  const scheduleSave = (): void => {
+    saveDirty = true;
+    if (saveTimer !== null) window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => void saveNow(), 2_000);
+  };
+  const offlineSeconds =
+    settings.offlineProgress && saveLoad.envelope
+      ? calculateOfflineSeconds(saveLoad.envelope.data.lastOnlineAt)
+      : 0;
+  const world = new WorldView(pixi, {
+    debug: state.debugWindow,
+    ...(saveLoad.envelope
+      ? { initialSnapshot: saveLoad.envelope.data }
+      : {}),
+    offlineSeconds,
+    onDirty: scheduleSave,
+    maxFps: settings.maxFps,
+  });
   world.setMode(state.mode);
   document.title = `DeskHabitat ${version}`;
   renderWindowState(state);
@@ -173,9 +213,20 @@ async function bootstrap(): Promise<void> {
       world.resize(window.innerWidth, window.innerHeight);
       void window.deskHabitat.window.getState().then(renderWindowState);
     }
+    if (command.type === 'save-requested') {
+      void saveNow().finally(() => {
+        window.deskHabitat.lifecycle.saveComplete();
+      });
+    }
   });
   window.addEventListener('resize', () => {
     world.resize(window.innerWidth, window.innerHeight);
+  });
+  window.setInterval(() => {
+    void saveNow();
+  }, 60_000);
+  window.addEventListener('beforeunload', () => {
+    if (saveDirty) void saveNow();
   });
   window.deskHabitat.lifecycle.rendererReady();
 }
