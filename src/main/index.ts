@@ -473,6 +473,13 @@ async function createMainWindow(): Promise<BrowserWindow> {
   window.webContents.on('preload-error', (_event, preloadPath, error) => {
     report('error', `DeskHabitat preload failed: ${preloadPath}`, error);
   });
+  window.webContents.on('console-message', (details) => {
+    if (details.level === 'error') {
+      report('error', 'DeskHabitat renderer console error.', details.message);
+    } else if (details.level === 'warning') {
+      report('warn', 'DeskHabitat renderer console warning.', details.message);
+    }
+  });
   window.webContents.on('render-process-gone', (_event, details) => {
     setPointerPassthrough(true);
     report('error', `DeskHabitat renderer exited: ${details.reason}.`, details);

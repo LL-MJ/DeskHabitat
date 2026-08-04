@@ -679,7 +679,7 @@ export class WorldView {
     this.addOrchardObject(
       textures.shelter,
       ORCHARD_ASSETS.shelter.logicalSize,
-      { x: 6.2, y: 0.8 },
+      { x: 6, y: 0.8 },
       4,
     );
     this.addOrchardObject(
