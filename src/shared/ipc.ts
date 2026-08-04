@@ -29,6 +29,9 @@ export const IPC_CHANNELS = {
     load: 'desk-habitat:settings:load',
     update: 'desk-habitat:settings:update',
   },
+  diagnostics: {
+    log: 'desk-habitat:diagnostics:log',
+  },
   events: {
     command: 'desk-habitat:events:command',
   },
@@ -57,6 +60,9 @@ export interface DeskHabitatApi {
     update(
       patch: Partial<Omit<AppSettings, 'schemaVersion'>>,
     ): Promise<AppSettings>;
+  };
+  diagnostics: {
+    log(level: 'warn' | 'error', message: string): void;
   };
   events: {
     onCommand(listener: (command: AppCommand) => void): () => void;

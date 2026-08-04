@@ -132,7 +132,7 @@ export class WorldView {
   private gameTimeSeconds = 0;
   private readonly worldId: string;
   private readonly onDirty: (() => void) | null;
-  private readonly maxLifeFps: 30 | 60;
+  private maxLifeFps: 30 | 60;
   private elapsedMilliseconds = 0;
   private renderedFrames = 0;
 
@@ -274,6 +274,23 @@ export class WorldView {
     const transform = fitWorldToViewport(bounds, { width, height });
     this.root.position.set(transform.x, transform.y);
     this.root.scale.set(transform.scale);
+  }
+
+  resetTiming(): void {
+    this.simulationClock.reset();
+    this.elapsedMilliseconds = 0;
+    this.renderedFrames = 0;
+  }
+
+  setMaxFps(maxFps: 30 | 60): void {
+    this.maxLifeFps = maxFps;
+    if (this.mode !== 'build') this.app.ticker.maxFPS = maxFps;
+  }
+
+  dispose(): void {
+    this.clearFenceCandidate();
+    this.app.ticker.remove(this.updateSimulation, this);
+    this.app.ticker.remove(this.updateDebugOverlay, this);
   }
 
   createSaveSnapshot(): SaveSnapshot {

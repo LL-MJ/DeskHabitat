@@ -64,6 +64,7 @@ export interface AppSettings {
   maxFps: 30 | 60;
   layer: WindowLayer;
   offlineProgress: boolean;
+  onboardingComplete: boolean;
 }
 
 export const DEFAULT_SETTINGS: Readonly<AppSettings> = {
@@ -72,6 +73,7 @@ export const DEFAULT_SETTINGS: Readonly<AppSettings> = {
   maxFps: 30,
   layer: 'overlay',
   offlineProgress: true,
+  onboardingComplete: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -242,11 +244,20 @@ export function parseSettings(value: unknown): AppSettings | null {
       !Number.isInteger(value['targetDisplayId'])) ||
     ![30, 60].includes(value['maxFps'] as number) ||
     !['overlay', 'desktop'].includes(value['layer'] as string) ||
-    typeof value['offlineProgress'] !== 'boolean'
+    typeof value['offlineProgress'] !== 'boolean' ||
+    (value['onboardingComplete'] !== undefined &&
+      typeof value['onboardingComplete'] !== 'boolean')
   ) {
     return null;
   }
-  return value as unknown as AppSettings;
+  return {
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
+    targetDisplayId: value['targetDisplayId'] as number | null,
+    maxFps: value['maxFps'] as 30 | 60,
+    layer: value['layer'] as WindowLayer,
+    offlineProgress: value['offlineProgress'],
+    onboardingComplete: value['onboardingComplete'] ?? false,
+  };
 }
 
 export function calculateOfflineSeconds(

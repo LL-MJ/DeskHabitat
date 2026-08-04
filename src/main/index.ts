@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   screen,
   Tray,
   type Display,
@@ -23,6 +24,7 @@ import {
   type WindowState,
 } from '../shared/window';
 import { PersistenceService } from './persistence';
+import { AppLogger, type LogLevel } from './logger';
 
 const DEBUG_WINDOW_SIZE = { width: 900, height: 600 };
 const TRAY_ICON_DATA_URL =
@@ -36,14 +38,25 @@ let tray: Tray | null = null;
 let currentMode: WindowMode = 'life';
 let currentLayer: WindowLayer = 'overlay';
 let targetDisplayId: number | null = null;
+let currentMaxFps: 30 | 60 = 30;
 let pointerPassthrough = true;
 let isQuitting = false;
 let persistence: PersistenceService | null = null;
+let logger: AppLogger | null = null;
 let quitSaveTimer: NodeJS.Timeout | null = null;
 let quitSavePending = false;
+let rendererRecoveryAttempts = 0;
+let rendererRecoveryTimer: NodeJS.Timeout | null = null;
 
 const debugWindow =
   !app.isPackaged && process.env['DESK_HABITAT_DESKTOP_WINDOW'] !== '1';
+
+function report(level: LogLevel, message: string, details?: unknown): void {
+  if (level === 'error') console.error(message, details ?? '');
+  else if (level === 'warn') console.warn(message, details ?? '');
+  else console.info(message, details ?? '');
+  logger?.write(level, message, details);
+}
 
 function toDisplayInfo(display: Display): DisplayInfo {
   return {
@@ -81,7 +94,11 @@ function getWindowState(): WindowState {
 
 function sendCommand(command: AppCommand): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(IPC_CHANNELS.events.command, command);
+    try {
+      mainWindow.webContents.send(IPC_CHANNELS.events.command, command);
+    } catch (error: unknown) {
+      report('warn', 'DeskHabitat could not deliver a renderer command.', error);
+    }
   }
 }
 
@@ -109,7 +126,7 @@ function setMode(mode: WindowMode): WindowState {
     mainWindow.focus();
   }
 
-  console.info(`DeskHabitat mode changed to ${mode}.`);
+  report('info', `DeskHabitat mode changed to ${mode}.`);
   return getWindowState();
 }
 
@@ -138,7 +155,7 @@ function requestApplicationQuit(): void {
   quitSavePending = true;
   sendCommand({ type: 'save-requested' });
   quitSaveTimer = setTimeout(() => {
-    console.warn('DeskHabitat quit save timed out; continuing shutdown.');
+    report('warn', 'DeskHabitat quit save timed out; continuing shutdown.');
     finishApplicationQuit();
   }, 1_500);
 }
@@ -149,7 +166,7 @@ function setLayer(layer: WindowLayer): void {
   rebuildTrayMenu();
   broadcastState();
   void persistence?.updateSettings({ layer }).catch((error: unknown) => {
-    console.warn('DeskHabitat failed to persist window layer.', error);
+    report('warn', 'DeskHabitat failed to persist window layer.', error);
   });
 }
 
@@ -169,7 +186,8 @@ function updateWindowBounds(): void {
 
   const display = getDisplayInfo();
   sendCommand({ type: 'display-changed', display });
-  console.info(
+  report(
+    'info',
     `DeskHabitat display updated: ${display.label}, ${display.workArea.width}x${display.workArea.height} @ ${display.scaleFactor}.`,
   );
 }
@@ -213,6 +231,15 @@ function rebuildTrayMenu(): void {
       click: (item) => setLayer(item.checked ? 'overlay' : 'desktop'),
     },
     {
+      label: '生活模式帧率',
+      submenu: ([30, 60] as const).map((maxFps) => ({
+        label: `${maxFps} FPS`,
+        type: 'radio' as const,
+        checked: currentMaxFps === maxFps,
+        click: () => setMaxFps(maxFps),
+      })),
+    },
+    {
       label: '强制恢复鼠标穿透',
       enabled: !pointerPassthrough,
       click: () => setPointerPassthrough(true),
@@ -220,6 +247,10 @@ function rebuildTrayMenu(): void {
     {
       label: '重置窗口位置',
       click: updateWindowBounds,
+    },
+    {
+      label: '使用提示',
+      click: showGettingStarted,
     },
     ...(debugWindow
       ? [
@@ -257,7 +288,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.window.getDisplayInfo, () => getDisplayInfo());
   ipcMain.handle(IPC_CHANNELS.save.load, async () => {
     if (!persistence) throw new Error('Persistence service is not ready.');
-    return persistence.loadSave();
+    const result = await persistence.loadSave();
+    report(
+      result.source === 'primary' ? 'info' : 'warn',
+      `DeskHabitat save loaded from ${result.source}.`,
+    );
+    return result;
   });
   ipcMain.handle(
     IPC_CHANNELS.save.write,
@@ -266,7 +302,9 @@ function registerIpcHandlers(): void {
       if (!isSaveSnapshot(snapshot)) {
         throw new TypeError('Invalid DeskHabitat save snapshot.');
       }
-      return persistence.writeSave(snapshot, app.getVersion());
+      const result = await persistence.writeSave(snapshot, app.getVersion());
+      report('info', `DeskHabitat save completed at ${result.savedAt}.`);
+      return result;
     },
   );
   ipcMain.handle(IPC_CHANNELS.settings.load, async () => {
@@ -285,6 +323,19 @@ function registerIpcHandlers(): void {
       );
     },
   );
+  ipcMain.on(
+    IPC_CHANNELS.diagnostics.log,
+    (_event, level: unknown, message: unknown) => {
+      if (
+        (level !== 'warn' && level !== 'error') ||
+        typeof message !== 'string'
+      ) {
+        report('warn', 'DeskHabitat rejected an invalid diagnostic message.');
+        return;
+      }
+      report(level, 'Renderer diagnostic', message.slice(0, 6_000));
+    },
+  );
   ipcMain.handle(IPC_CHANNELS.window.setMode, (_event, mode: unknown) => {
     if (!isWindowMode(mode)) throw new TypeError('Invalid DeskHabitat window mode.');
     return setMode(mode);
@@ -299,11 +350,28 @@ function registerIpcHandlers(): void {
     },
   );
   ipcMain.on(IPC_CHANNELS.lifecycle.rendererReady, () => {
-    console.info('DeskHabitat renderer ready.');
+    report('info', 'DeskHabitat renderer ready.');
     broadcastState();
   });
   ipcMain.on(IPC_CHANNELS.lifecycle.saveComplete, () => {
     if (quitSavePending) finishApplicationQuit();
+  });
+}
+
+function setMaxFps(maxFps: 30 | 60): void {
+  currentMaxFps = maxFps;
+  sendCommand({ type: 'performance-settings-changed', maxFps });
+  rebuildTrayMenu();
+  void persistence?.updateSettings({ maxFps }).catch((error: unknown) => {
+    report('warn', 'DeskHabitat failed to persist the frame-rate limit.', error);
+  });
+}
+
+function showGettingStarted(): void {
+  tray?.displayBalloon({
+    iconType: 'info',
+    title: 'DeskHabitat 已在桌面运行',
+    content: '右键托盘图标可进入布置模式；遇到输入问题可选择“强制恢复鼠标穿透”。',
   });
 }
 
@@ -313,17 +381,50 @@ function setTargetDisplay(displayId: number): void {
   void persistence
     ?.updateSettings({ targetDisplayId: displayId })
     .catch((error: unknown) => {
-      console.warn('DeskHabitat failed to persist target display.', error);
+      report('warn', 'DeskHabitat failed to persist target display.', error);
     });
   updateWindowBounds();
   rebuildTrayMenu();
 }
 
 function registerDisplayListeners(): void {
-  const handleDisplayChange = () => updateWindowBounds();
+  const handleDisplayChange = () => {
+    if (
+      targetDisplayId !== null &&
+      !screen.getAllDisplays().some((display) => display.id === targetDisplayId)
+    ) {
+      targetDisplayId = null;
+      void persistence
+        ?.updateSettings({ targetDisplayId: null })
+        .catch((error: unknown) => {
+          report('warn', 'DeskHabitat failed to reset a missing display.', error);
+        });
+    }
+    if (currentMode === 'build') setMode('life');
+    else setPointerPassthrough(true);
+    updateWindowBounds();
+    rebuildTrayMenu();
+  };
   screen.on('display-added', handleDisplayChange);
   screen.on('display-removed', handleDisplayChange);
   screen.on('display-metrics-changed', handleDisplayChange);
+}
+
+function registerPowerListeners(): void {
+  const enterSafeState = () => {
+    setPointerPassthrough(true);
+    sendCommand({ type: 'save-requested' });
+  };
+  const restoreAfterResume = () => {
+    setMode('life');
+    updateWindowBounds();
+    sendCommand({ type: 'system-resumed' });
+    report('info', 'DeskHabitat restored after system resume.');
+  };
+  powerMonitor.on('suspend', enterSafeState);
+  powerMonitor.on('lock-screen', enterSafeState);
+  powerMonitor.on('resume', restoreAfterResume);
+  powerMonitor.on('unlock-screen', restoreAfterResume);
 }
 
 async function createMainWindow(): Promise<BrowserWindow> {
@@ -361,7 +462,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     try {
       window.setBackgroundMaterial('none');
     } catch (error: unknown) {
-      console.warn('DeskHabitat could not disable the Windows backdrop.', error);
+      report('warn', 'DeskHabitat could not disable the Windows backdrop.', error);
     }
     window.setBackgroundColor('rgba(0, 0, 0, 0)');
   }
@@ -370,13 +471,29 @@ async function createMainWindow(): Promise<BrowserWindow> {
   window.setIgnoreMouseEvents(true, { forward: true });
 
   window.webContents.on('preload-error', (_event, preloadPath, error) => {
-    console.error(`DeskHabitat preload failed: ${preloadPath}`, error);
+    report('error', `DeskHabitat preload failed: ${preloadPath}`, error);
   });
-  window.webContents.on('render-process-gone', () => {
+  window.webContents.on('render-process-gone', (_event, details) => {
     setPointerPassthrough(true);
+    report('error', `DeskHabitat renderer exited: ${details.reason}.`, details);
+    if (isQuitting || rendererRecoveryAttempts >= 2) return;
+    rendererRecoveryAttempts += 1;
+    if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer);
+    rendererRecoveryTimer = setTimeout(() => {
+      rendererRecoveryTimer = null;
+      if (!window.isDestroyed()) window.webContents.reload();
+    }, 500);
+  });
+  window.on('unresponsive', () => {
+    setPointerPassthrough(true);
+    report('warn', 'DeskHabitat renderer became unresponsive.');
+  });
+  window.on('responsive', () => {
+    report('info', 'DeskHabitat renderer recovered responsiveness.');
   });
   window.on('blur', () => {
-    if (currentMode !== 'build') setPointerPassthrough(true);
+    if (currentMode === 'build') setMode('life');
+    else setPointerPassthrough(true);
   });
   window.on('close', (event) => {
     if (!isQuitting) {
@@ -386,6 +503,8 @@ async function createMainWindow(): Promise<BrowserWindow> {
   });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
+    if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer);
+    rendererRecoveryTimer = null;
   });
   window.once('ready-to-show', () => {
     if (!debugWindow) window.setBackgroundColor('rgba(0, 0, 0, 0)');
@@ -397,6 +516,12 @@ async function createMainWindow(): Promise<BrowserWindow> {
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+process.on('unhandledRejection', (reason: unknown) => {
+  if (app.isReady()) setPointerPassthrough(true);
+  else pointerPassthrough = true;
+  report('error', 'DeskHabitat main process rejected a promise.', reason);
+});
 
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -411,13 +536,24 @@ if (!hasSingleInstanceLock) {
   app
     .whenReady()
     .then(async () => {
+      logger = new AppLogger(app.getPath('userData'));
+      await logger.initialize().catch((error: unknown) => {
+        console.warn('DeskHabitat logger initialization failed.', error);
+      });
+      report('info', `DeskHabitat ${app.getVersion()} starting.`);
       persistence = new PersistenceService(app.getPath('userData'));
       const settings = await persistence.loadSettings();
       currentLayer = settings.layer;
       targetDisplayId = settings.targetDisplayId;
+      currentMaxFps = settings.maxFps;
       registerIpcHandlers();
       registerDisplayListeners();
+      registerPowerListeners();
       createTray();
+      if (!settings.onboardingComplete) {
+        showGettingStarted();
+        await persistence.updateSettings({ onboardingComplete: true });
+      }
       await createMainWindow();
 
       if (debugWindow) {
@@ -427,7 +563,7 @@ if (!hasSingleInstanceLock) {
       }
     })
     .catch((error: unknown) => {
-      console.error('DeskHabitat failed to start.', error);
+      report('error', 'DeskHabitat failed to start.', error);
       app.quit();
     });
 }
@@ -440,4 +576,6 @@ app.on('window-all-closed', () => {
 });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer);
+  void logger?.flush();
 });

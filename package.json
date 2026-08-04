@@ -16,6 +16,7 @@
     "build:renderer": "vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-isolation=none \"tests/**/*.test.mts\"",
+    "benchmark": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-isolation=none tests/performance.test.mts",
     "lint": "eslint .",
     "check": "npm run lint && npm run typecheck && npm run test",
     "setup:electron": "install-electron",

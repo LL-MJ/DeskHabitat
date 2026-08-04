@@ -29,6 +29,8 @@ export interface WindowState {
 export type AppCommand =
   | { type: 'state-changed'; state: WindowState }
   | { type: 'display-changed'; display: DisplayInfo }
+  | { type: 'performance-settings-changed'; maxFps: 30 | 60 }
+  | { type: 'system-resumed' }
   | { type: 'save-requested' };
 
 export function isWindowMode(value: unknown): value is WindowMode {

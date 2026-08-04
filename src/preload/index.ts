@@ -22,6 +22,7 @@ const LOAD_SAVE_CHANNEL = 'desk-habitat:save:load';
 const WRITE_SAVE_CHANNEL = 'desk-habitat:save:write';
 const LOAD_SETTINGS_CHANNEL = 'desk-habitat:settings:load';
 const UPDATE_SETTINGS_CHANNEL = 'desk-habitat:settings:update';
+const DIAGNOSTICS_LOG_CHANNEL = 'desk-habitat:diagnostics:log';
 
 const api: DeskHabitatApi = Object.freeze({
   app: Object.freeze({
@@ -43,6 +44,11 @@ const api: DeskHabitatApi = Object.freeze({
     load: () => ipcRenderer.invoke(LOAD_SETTINGS_CHANNEL),
     update: (patch: Partial<Omit<AppSettings, 'schemaVersion'>>) =>
       ipcRenderer.invoke(UPDATE_SETTINGS_CHANNEL, patch),
+  }),
+  diagnostics: Object.freeze({
+    log: (level: 'warn' | 'error', message: string) => {
+      ipcRenderer.send(DIAGNOSTICS_LOG_CHANNEL, level, message);
+    },
   }),
   events: Object.freeze({
     onCommand: (listener: (command: AppCommand) => void) => {

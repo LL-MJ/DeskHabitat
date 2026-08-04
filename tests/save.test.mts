@@ -75,6 +75,17 @@ describe('settings validation', () => {
     assert.deepEqual(parseSettings(DEFAULT_SETTINGS), DEFAULT_SETTINGS);
     assert.equal(parseSettings({ ...DEFAULT_SETTINGS, maxFps: 45 }), null);
   });
+
+  it('adds the onboarding flag when loading an earlier v1 settings file', () => {
+    const parsed = parseSettings({
+      schemaVersion: DEFAULT_SETTINGS.schemaVersion,
+      targetDisplayId: null,
+      maxFps: 30,
+      layer: 'overlay',
+      offlineProgress: true,
+    });
+    assert.equal(parsed?.onboardingComplete, false);
+  });
 });
 
 describe('offline progress', () => {

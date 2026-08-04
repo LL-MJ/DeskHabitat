@@ -7,6 +7,23 @@ import type { WindowMode, WindowState } from '../shared/window';
 import './styles/global.css';
 import { WorldView, type BuildFeedback, type BuildTool } from './world/WorldView';
 
+function describeError(value: unknown): string {
+  if (value instanceof Error) return value.stack ?? value.message;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+window.addEventListener('error', (event) => {
+  window.deskHabitat.diagnostics.log('error', describeError(event.error ?? event.message));
+});
+window.addEventListener('unhandledrejection', (event) => {
+  window.deskHabitat.diagnostics.log('error', describeError(event.reason));
+});
+
 function renderWindowState(state: WindowState): void {
   const status = document.querySelector<HTMLElement>('#status');
   if (status === null) return;
@@ -61,7 +78,10 @@ async function bootstrap(): Promise<void> {
     window.deskHabitat.save.load(),
     window.deskHabitat.settings.load(),
   ]);
-  if (saveLoad.warning) console.warn(saveLoad.warning);
+  if (saveLoad.warning) {
+    console.warn(saveLoad.warning);
+    window.deskHabitat.diagnostics.log('warn', saveLoad.warning);
+  }
 
   let saveTimer: number | null = null;
   let saveDirty = false;
@@ -199,19 +219,29 @@ async function bootstrap(): Promise<void> {
     });
   }
 
-  window.deskHabitat.events.onCommand((command) => {
+  const refreshDisplay = (): void => {
+    const nextResolution = normalizePixelRatio(window.devicePixelRatio);
+    if (pixi.renderer.resolution !== nextResolution) {
+      pixi.renderer.resolution = nextResolution;
+      pixi.renderer.resize(window.innerWidth, window.innerHeight);
+    }
+    world.resize(window.innerWidth, window.innerHeight);
+  };
+  const unsubscribeCommand = window.deskHabitat.events.onCommand((command) => {
     if (command.type === 'state-changed') {
       renderWindowState(command.state);
       world.setMode(command.state.mode);
     }
     if (command.type === 'display-changed') {
-      const nextResolution = normalizePixelRatio(window.devicePixelRatio);
-      if (pixi.renderer.resolution !== nextResolution) {
-        pixi.renderer.resolution = nextResolution;
-        pixi.renderer.resize(window.innerWidth, window.innerHeight);
-      }
-      world.resize(window.innerWidth, window.innerHeight);
+      refreshDisplay();
       void window.deskHabitat.window.getState().then(renderWindowState);
+    }
+    if (command.type === 'system-resumed') {
+      world.resetTiming();
+      refreshDisplay();
+    }
+    if (command.type === 'performance-settings-changed') {
+      world.setMaxFps(command.maxFps);
     }
     if (command.type === 'save-requested') {
       void saveNow().finally(() => {
@@ -222,11 +252,22 @@ async function bootstrap(): Promise<void> {
   window.addEventListener('resize', () => {
     world.resize(window.innerWidth, window.innerHeight);
   });
-  window.setInterval(() => {
+  const periodicSaveTimer = window.setInterval(() => {
     void saveNow();
   }, 60_000);
+  let disposed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    if (saveTimer !== null) window.clearTimeout(saveTimer);
+    window.clearInterval(periodicSaveTimer);
+    unsubscribeCommand();
+    world.dispose();
+    pixi.destroy({ removeView: true }, { children: true });
+  };
   window.addEventListener('beforeunload', () => {
     if (saveDirty) void saveNow();
+    dispose();
   });
   window.deskHabitat.lifecycle.rendererReady();
 }
