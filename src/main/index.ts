@@ -242,14 +242,17 @@ async function createMainWindow(): Promise<BrowserWindow> {
     ...initialBounds,
     ...(debugWindow ? { minWidth: 640, minHeight: 480 } : {}),
     show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    skipTaskbar: true,
+    // The development window deliberately keeps the native frame so M2
+    // resize behaviour can be tested with ordinary Windows resize handles.
+    // The real desktop habitat remains transparent and frameless.
+    frame: debugWindow,
+    transparent: !debugWindow,
+    backgroundColor: debugWindow ? '#20262a' : '#00000000',
+    skipTaskbar: !debugWindow,
     resizable: debugWindow,
     movable: debugWindow,
     hasShadow: debugWindow,
-    focusable: false,
+    focusable: debugWindow,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
