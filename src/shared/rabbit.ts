@@ -1,3 +1,7 @@
+import type {
+  FacilityKind,
+  FacilityTarget,
+} from './facility';
 import type { Point } from './isometric';
 import type { GridCell } from './navigation';
 
@@ -10,8 +14,32 @@ export interface RabbitNavigation {
   findNearestWalkable(origin: GridCell): GridCell | null;
 }
 
-export type RabbitState = 'idle' | 'wander';
+export interface RabbitFacilities {
+  readonly version: number;
+  isUsable(id: string, kind?: FacilityKind): boolean;
+  findReachableTarget(
+    kind: FacilityKind,
+    start: GridCell,
+    excludedIds?: ReadonlySet<string>,
+  ): FacilityTarget | null;
+  consume(id: string, amount: number): number;
+}
+
+export type RabbitState =
+  | 'idle'
+  | 'wander'
+  | 'seekFood'
+  | 'eat'
+  | 'seekWater'
+  | 'drink'
+  | 'rest';
 export type RabbitFacing = 'north' | 'east' | 'south' | 'west';
+
+export interface RabbitNeeds {
+  hunger: number;
+  thirst: number;
+  energy: number;
+}
 
 export interface RabbitSnapshot {
   position: Point;
@@ -20,8 +48,11 @@ export interface RabbitSnapshot {
   stateElapsedSeconds: number;
   transitionReason: string;
   target: GridCell | null;
+  targetFacilityId: string | null;
   path: readonly GridCell[];
+  needs: RabbitNeeds;
   navigationVersion: number;
+  facilityVersion: number;
   repathCount: number;
 }
 
@@ -31,7 +62,15 @@ export interface RabbitModelOptions {
   random?: () => number;
   speed?: number;
   navigation?: RabbitNavigation;
+  facilities?: RabbitFacilities;
+  initialNeeds?: Partial<RabbitNeeds>;
 }
+
+const HUNGER_SEEK_THRESHOLD = 70;
+const THIRST_SEEK_THRESHOLD = 75;
+const NEED_SATISFIED_THRESHOLD = 15;
+const REST_THRESHOLD = 18;
+const RESTED_THRESHOLD = 85;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -98,8 +137,12 @@ export class RabbitModel {
   private readonly random: () => number;
   private readonly speed: number;
   private readonly navigation: RabbitNavigation;
+  private readonly facilities: RabbitFacilities | null;
   private readonly position: Point;
+  private readonly needs: RabbitNeeds;
+  private readonly failedFacilityIds = new Set<string>();
   private target: GridCell | null = null;
+  private targetFacility: { id: string; kind: FacilityKind } | null = null;
   private path: GridCell[] = [];
   private pathIndex = 0;
   private pathVersion = 0;
@@ -131,6 +174,7 @@ export class RabbitModel {
     ) {
       throw new RangeError('Rabbit world and navigation grid sizes must match.');
     }
+    this.facilities = options.facilities ?? null;
     this.speed = options.speed ?? 0.9;
     if (!Number.isFinite(this.speed) || this.speed <= 0) {
       throw new RangeError('Rabbit speed must be positive.');
@@ -139,6 +183,11 @@ export class RabbitModel {
     this.position = {
       x: Math.floor((this.columns - 1) / 2),
       y: Math.floor((this.rows - 1) / 2),
+    };
+    this.needs = {
+      hunger: clamp(options.initialNeeds?.hunger ?? 40, 0, 100),
+      thirst: clamp(options.initialNeeds?.thirst ?? 40, 0, 100),
+      energy: clamp(options.initialNeeds?.energy ?? 80, 0, 100),
     };
     this.recoverFromBlockedCell();
   }
@@ -151,26 +200,145 @@ export class RabbitModel {
       stateElapsedSeconds: this.stateElapsedSeconds,
       transitionReason: this.transitionReason,
       target: this.target ? { ...this.target } : null,
+      targetFacilityId: this.targetFacility?.id ?? null,
       path: this.path.slice(this.pathIndex).map((cell) => ({ ...cell })),
+      needs: { ...this.needs },
       navigationVersion: this.navigation.version,
+      facilityVersion: this.facilities?.version ?? 0,
       repathCount: this.repathCount,
     };
   }
 
   step(stepSeconds: number): void {
     if (!Number.isFinite(stepSeconds) || stepSeconds <= 0) return;
+    this.updatePassiveNeeds(stepSeconds);
     if (this.navigation.version !== this.pathVersion) {
       this.handleNavigationChange();
     }
     this.stateElapsedSeconds += stepSeconds;
 
-    if (this.state === 'idle') {
-      this.idleRemainingSeconds -= stepSeconds;
-      if (this.idleRemainingSeconds <= 0) this.beginWander();
-      return;
+    switch (this.state) {
+      case 'idle':
+        if (this.chooseNeedBehavior()) return;
+        this.idleRemainingSeconds -= stepSeconds;
+        if (this.idleRemainingSeconds <= 0) this.beginWander();
+        return;
+      case 'wander':
+        if (this.chooseNeedBehavior()) return;
+        this.moveTowardsTarget(stepSeconds);
+        return;
+      case 'seekFood':
+      case 'seekWater':
+        if (!this.validateFacilityTarget()) return;
+        this.moveTowardsTarget(stepSeconds);
+        return;
+      case 'eat':
+        this.consumeFacility('foodBowl', 'hunger', stepSeconds);
+        return;
+      case 'drink':
+        this.consumeFacility('waterBowl', 'thirst', stepSeconds);
+        return;
+      case 'rest':
+        this.needs.energy = clamp(this.needs.energy + 18 * stepSeconds, 0, 100);
+        if (this.needs.energy >= RESTED_THRESHOLD) {
+          this.beginIdle('rest_complete');
+        }
+        return;
+    }
+  }
+
+  private updatePassiveNeeds(stepSeconds: number): void {
+    this.needs.hunger = clamp(this.needs.hunger + 0.55 * stepSeconds, 0, 100);
+    this.needs.thirst = clamp(this.needs.thirst + 0.75 * stepSeconds, 0, 100);
+    if (this.state !== 'rest') {
+      this.needs.energy = clamp(this.needs.energy - 0.25 * stepSeconds, 0, 100);
+    }
+  }
+
+  private chooseNeedBehavior(): boolean {
+    if (this.needs.thirst >= THIRST_SEEK_THRESHOLD) {
+      return this.beginSeeking('waterBowl', 'thirst_threshold');
+    }
+    if (this.needs.hunger >= HUNGER_SEEK_THRESHOLD) {
+      return this.beginSeeking('foodBowl', 'hunger_threshold');
+    }
+    if (this.needs.energy <= REST_THRESHOLD) {
+      this.clearMovement();
+      this.transition('rest', 'energy_threshold');
+      return true;
+    }
+    return false;
+  }
+
+  private beginSeeking(kind: FacilityKind, reason: string): boolean {
+    if (!this.facilities) return false;
+    let facilityTarget = this.facilities.findReachableTarget(
+      kind,
+      this.currentCell(),
+      this.failedFacilityIds,
+    );
+    if (!facilityTarget && this.failedFacilityIds.size > 0) {
+      this.failedFacilityIds.clear();
+      facilityTarget = this.facilities.findReachableTarget(
+        kind,
+        this.currentCell(),
+      );
+    }
+    if (!facilityTarget) {
+      this.beginIdle(`${kind}_unreachable`);
+      return false;
     }
 
-    this.moveTowardsTarget(stepSeconds);
+    this.targetFacility = { id: facilityTarget.facilityId, kind };
+    this.target = { ...facilityTarget.entrance };
+    this.setPath(facilityTarget.path);
+    this.transition(
+      kind === 'foodBowl' ? 'seekFood' : 'seekWater',
+      reason,
+    );
+    if (facilityTarget.path.length < 2) this.arriveAtTarget();
+    return true;
+  }
+
+  private validateFacilityTarget(): boolean {
+    if (
+      this.targetFacility &&
+      this.facilities?.isUsable(
+        this.targetFacility.id,
+        this.targetFacility.kind,
+      )
+    ) {
+      return true;
+    }
+    const kind = this.targetFacility?.kind;
+    if (this.targetFacility) this.failedFacilityIds.add(this.targetFacility.id);
+    if (kind && this.beginSeeking(kind, 'facility_target_invalid')) return false;
+    this.beginIdle('facility_target_lost');
+    return false;
+  }
+
+  private consumeFacility(
+    kind: FacilityKind,
+    need: 'hunger' | 'thirst',
+    stepSeconds: number,
+  ): void {
+    if (!this.validateFacilityTarget() || !this.targetFacility || !this.facilities) {
+      return;
+    }
+    const consumed = this.facilities.consume(
+      this.targetFacility.id,
+      20 * stepSeconds,
+    );
+    this.needs[need] = clamp(this.needs[need] - consumed, 0, 100);
+    if (this.needs[need] <= NEED_SATISFIED_THRESHOLD) {
+      this.failedFacilityIds.clear();
+      this.beginIdle(`${need}_satisfied`);
+    } else if (consumed <= 0) {
+      this.failedFacilityIds.add(this.targetFacility.id);
+      if (!this.beginSeeking(kind, 'facility_depleted')) {
+        this.beginIdle('no_replacement_facility');
+      }
+    }
   }
 
   private beginWander(): void {
@@ -191,6 +359,7 @@ export class RabbitModel {
       if (!path || path.length < 2) continue;
 
       this.target = target;
+      this.targetFacility = null;
       this.setPath(path);
       this.transition('wander', 'idle_timer_elapsed');
       return;
@@ -217,7 +386,7 @@ export class RabbitModel {
       this.position.y = waypoint.y;
       this.pathIndex += 1;
       if (this.pathIndex >= this.path.length) {
-        this.beginIdle('wander_target_reached');
+        this.arriveAtTarget();
         return;
       }
     } else {
@@ -234,14 +403,32 @@ export class RabbitModel {
     if (this.stuckSeconds >= 2) this.replan('stuck_recovery');
   }
 
+  private arriveAtTarget(): void {
+    this.path = [];
+    this.pathIndex = 0;
+    this.stuckSeconds = 0;
+    if (this.state === 'seekFood') {
+      this.transition('eat', 'food_entrance_reached');
+    } else if (this.state === 'seekWater') {
+      this.transition('drink', 'water_entrance_reached');
+    } else {
+      this.beginIdle('wander_target_reached');
+    }
+  }
+
   private beginIdle(reason: string): void {
+    this.clearMovement();
+    this.targetFacility = null;
+    this.idleRemainingSeconds = 0.8 + clamp(this.random(), 0, 1) * 1.4;
+    this.transition('idle', reason);
+  }
+
+  private clearMovement(): void {
     this.target = null;
     this.path = [];
     this.pathIndex = 0;
     this.pathVersion = this.navigation.version;
     this.stuckSeconds = 0;
-    this.idleRemainingSeconds = 0.8 + clamp(this.random(), 0, 1) * 1.4;
-    this.transition('idle', reason);
   }
 
   private transition(state: RabbitState, reason: string): void {
@@ -272,8 +459,18 @@ export class RabbitModel {
   }
 
   private handleNavigationChange(): void {
-    if (!this.recoverFromBlockedCell() && this.state === 'wander') {
+    if (this.recoverFromBlockedCell()) {
+      this.pathVersion = this.navigation.version;
+      return;
+    }
+    if (this.state === 'wander') {
       this.replan('navigation_version_changed');
+    } else if (this.state === 'seekFood' || this.state === 'seekWater') {
+      const kind = this.state === 'seekFood' ? 'foodBowl' : 'waterBowl';
+      this.repathCount += 1;
+      if (!this.beginSeeking(kind, 'navigation_version_changed')) {
+        this.beginIdle('facility_repath_failed');
+      }
     }
     this.pathVersion = this.navigation.version;
   }
@@ -295,6 +492,12 @@ export class RabbitModel {
   }
 
   private replan(reason: string): void {
+    if (this.state === 'seekFood' || this.state === 'seekWater') {
+      const kind = this.state === 'seekFood' ? 'foodBowl' : 'waterBowl';
+      this.repathCount += 1;
+      if (!this.beginSeeking(kind, reason)) this.beginIdle('repath_failed');
+      return;
+    }
     if (!this.target) {
       this.beginIdle('repath_without_target');
       return;

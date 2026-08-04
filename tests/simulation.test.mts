@@ -6,6 +6,7 @@ import {
   selectRabbitFacing,
 } from '../src/shared/rabbit.ts';
 import { NavigationGrid } from '../src/shared/navigation.ts';
+import { FacilitySystem } from '../src/shared/facility.ts';
 import { FixedStepClock } from '../src/shared/simulation.ts';
 
 describe('fixed-step simulation clock', () => {
@@ -95,5 +96,115 @@ describe('rabbit simulation', () => {
     assert.equal(navigation.isWalkable(recovered.position), true);
     assert.equal(recovered.transitionReason, 'blocked_cell_recovery');
     assert.equal(recovered.repathCount, 1);
+  });
+
+  it('seeks reachable food, eats, and keeps needs bounded', () => {
+    const navigation = new NavigationGrid({ columns: 5, rows: 5 });
+    const facilities = new FacilitySystem(navigation, [
+      {
+        id: 'food',
+        kind: 'foodBowl',
+        cell: { x: 4, y: 4 },
+        capacity: 100,
+      },
+    ]);
+    const rabbit = new RabbitModel({
+      columns: 5,
+      rows: 5,
+      navigation,
+      facilities,
+      speed: 4,
+      initialNeeds: { hunger: 75, thirst: 0, energy: 100 },
+    });
+
+    let satisfied = false;
+    for (let index = 0; index < 300; index += 1) {
+      rabbit.step(0.1);
+      if (rabbit.getSnapshot().transitionReason === 'hunger_satisfied') {
+        satisfied = true;
+        break;
+      }
+    }
+    const snapshot = rabbit.getSnapshot();
+    assert.equal(satisfied, true);
+    assert.ok(snapshot.needs.hunger >= 0 && snapshot.needs.hunger <= 15);
+    assert.ok(snapshot.needs.thirst >= 0 && snapshot.needs.thirst <= 100);
+    assert.ok(snapshot.needs.energy >= 0 && snapshot.needs.energy <= 100);
+    assert.ok((facilities.getSnapshot('food')?.capacity ?? 100) < 100);
+  });
+
+  it('switches to another facility when the current target is depleted', () => {
+    const navigation = new NavigationGrid({ columns: 5, rows: 5 });
+    const facilities = new FacilitySystem(navigation, [
+      {
+        id: 'near_water',
+        kind: 'waterBowl',
+        cell: { x: 2, y: 1 },
+        capacity: 1,
+      },
+      {
+        id: 'backup_water',
+        kind: 'waterBowl',
+        cell: { x: 4, y: 4 },
+        capacity: 100,
+      },
+    ]);
+    const rabbit = new RabbitModel({
+      columns: 5,
+      rows: 5,
+      navigation,
+      facilities,
+      speed: 4,
+      initialNeeds: { hunger: 0, thirst: 90, energy: 100 },
+    });
+
+    let selectedBackup = false;
+    for (let index = 0; index < 100; index += 1) {
+      rabbit.step(0.1);
+      if (rabbit.getSnapshot().targetFacilityId === 'backup_water') {
+        selectedBackup = true;
+        break;
+      }
+    }
+    assert.equal(facilities.isUsable('near_water'), false);
+    assert.equal(selectedBackup, true);
+  });
+
+  it('safely replaces a facility target that is removed while traveling', () => {
+    const navigation = new NavigationGrid({ columns: 6, rows: 6 });
+    const facilities = new FacilitySystem(navigation, [
+      { id: 'first_food', kind: 'foodBowl', cell: { x: 4, y: 4 } },
+      { id: 'backup_food', kind: 'foodBowl', cell: { x: 5, y: 0 } },
+    ]);
+    const rabbit = new RabbitModel({
+      columns: 6,
+      rows: 6,
+      navigation,
+      facilities,
+      initialNeeds: { hunger: 90, thirst: 0, energy: 100 },
+    });
+    rabbit.step(0.1);
+    const firstTarget = rabbit.getSnapshot().targetFacilityId;
+    assert.ok(firstTarget);
+    facilities.remove(firstTarget);
+    rabbit.step(0.1);
+
+    const replacement = rabbit.getSnapshot();
+    assert.notEqual(replacement.targetFacilityId, firstTarget);
+    assert.equal(replacement.state, 'seekFood');
+  });
+
+  it('rests in place when energy is low', () => {
+    const rabbit = new RabbitModel({
+      columns: 5,
+      rows: 5,
+      initialNeeds: { hunger: 0, thirst: 0, energy: 17 },
+    });
+    const position = rabbit.getSnapshot().position;
+    rabbit.step(0.1);
+    assert.equal(rabbit.getSnapshot().state, 'rest');
+    for (let index = 0; index < 20; index += 1) rabbit.step(0.1);
+    assert.deepEqual(rabbit.getSnapshot().position, position);
+    assert.ok(rabbit.getSnapshot().needs.energy > 17);
   });
 });

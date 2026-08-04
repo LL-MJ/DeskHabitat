@@ -19,6 +19,7 @@ import {
   fenceConnectionKey,
   rasterizeFenceStroke,
 } from '../../shared/fence';
+import { FacilitySystem } from '../../shared/facility';
 import { NavigationGrid, type GridCell } from '../../shared/navigation';
 import { RabbitModel } from '../../shared/rabbit';
 import { FixedStepClock } from '../../shared/simulation';
@@ -55,6 +56,10 @@ interface FenceStroke {
   moved: boolean;
 }
 
+function gridCellKey(cell: GridCell): string {
+  return `${cell.x},${cell.y}`;
+}
+
 function polygon(graphics: Graphics, points: readonly Point[]): Graphics {
   const [first, ...rest] = points;
   if (!first) return graphics;
@@ -80,16 +85,22 @@ export class WorldView {
   private readonly debug: boolean;
   private readonly fpsText: Text | null;
   private readonly navigation: NavigationGrid;
+  private readonly facilities: FacilitySystem;
   private readonly rabbit: RabbitModel;
   private readonly rabbitView: RabbitView;
+  private readonly debugBackdrop = new Graphics({ label: 'debug-backdrop' });
   private readonly navigationDebug = new Graphics({ label: 'path-debug' });
   private readonly fencePreview = new Graphics({ label: 'fence-preview' });
   private readonly fenceConnections = new Map<string, FenceConnection>();
+  private readonly fencePosts = new Map<string, GridCell>();
   private fenceViews: Graphics[] = [];
+  private facilityViews: Container[] = [];
+  private facilitySignature = '';
   private fenceStroke: FenceStroke | null = null;
   private readonly simulationClock = new FixedStepClock();
   private mode: WindowMode = 'life';
   private simulationSteps = 0;
+  private facilityRenderElapsed = 0;
   private elapsedMilliseconds = 0;
   private renderedFrames = 0;
 
@@ -121,19 +132,54 @@ export class WorldView {
         (cell) => cell.x < this.columns && cell.y < this.rows,
       ),
     });
+    for (const cell of DEFAULT_FENCES) {
+      if (cell.x < this.columns && cell.y < this.rows) {
+        this.fencePosts.set(gridCellKey(cell), { ...cell });
+      }
+    }
     for (let index = 1; index < DEFAULT_FENCES.length; index += 1) {
       const previous = DEFAULT_FENCES[index - 1];
       const current = DEFAULT_FENCES[index];
-      if (previous && current) this.addFenceConnection(previous, current);
+      if (
+        previous &&
+        current &&
+        this.fencePosts.has(gridCellKey(previous)) &&
+        this.fencePosts.has(gridCellKey(current))
+      ) {
+        this.addFenceConnection(previous, current);
+      }
     }
+    this.facilities = new FacilitySystem(this.navigation, [
+      {
+        id: 'food_bowl_01',
+        kind: 'foodBowl',
+        cell: { x: 0, y: 1 },
+        capacity: 100,
+      },
+      {
+        id: 'water_bowl_01',
+        kind: 'waterBowl',
+        cell: { x: Math.max(1, this.columns - 2), y: this.rows - 1 },
+        capacity: 30,
+      },
+      {
+        id: 'water_bowl_02',
+        kind: 'waterBowl',
+        cell: { x: this.columns - 1, y: 0 },
+        capacity: 100,
+      },
+    ]);
     this.rabbit = new RabbitModel({
       columns: this.columns,
       rows: this.rows,
       navigation: this.navigation,
+      facilities: this.facilities,
+      initialNeeds: { hunger: 64, thirst: 69, energy: 78 },
     });
     this.rabbitView = new RabbitView();
     this.objectLayer.addChild(this.rabbitView.root);
     this.drawFences();
+    this.drawFacilities();
     this.rabbitView.render(this.rabbit.getSnapshot(), 0);
     if (this.debug) this.debugLayer.addChild(this.navigationDebug);
     this.fpsText = this.debug ? this.createDebugOverlay() : null;
@@ -167,8 +213,12 @@ export class WorldView {
     const cell = this.viewportToGridCell(viewport);
     if (!cell || this.isRabbitCell(cell)) return false;
 
-    const initiallyBlocked = !this.navigation.isWalkable(cell);
-    if (!initiallyBlocked) this.navigation.setBlocked(cell, true);
+    const initiallyBlocked = this.fencePosts.has(gridCellKey(cell));
+    if (!initiallyBlocked && !this.navigation.isWalkable(cell)) return false;
+    if (!initiallyBlocked) {
+      this.navigation.setBlocked(cell, true);
+      this.fencePosts.set(gridCellKey(cell), { ...cell });
+    }
     this.fenceStroke = {
       start: cell,
       last: cell,
@@ -237,8 +287,14 @@ export class WorldView {
       this.clearFenceCandidate();
       return;
     }
-    if (this.navigation.isWalkable(next)) {
+    const nextIsFence = this.fencePosts.has(gridCellKey(next));
+    if (!nextIsFence && !this.navigation.isWalkable(next)) {
+      this.clearFenceCandidate();
+      return;
+    }
+    if (!nextIsFence) {
       this.navigation.setBlocked(next, true);
+      this.fencePosts.set(gridCellKey(next), { ...next });
     }
     this.addFenceConnection(stroke.last, next);
     stroke.last = next;
@@ -369,6 +425,7 @@ export class WorldView {
       }
     }
 
+    this.fencePosts.delete(gridCellKey(cell));
     this.navigation.setBlocked(cell, false);
     for (const [key, connection] of this.fenceConnections) {
       const touchesCell =
@@ -383,7 +440,8 @@ export class WorldView {
           (connection.a.x === neighbor.x && connection.a.y === neighbor.y) ||
           (connection.b.x === neighbor.x && connection.b.y === neighbor.y),
       );
-      if (!stillConnected && !this.navigation.isWalkable(neighbor)) {
+      if (!stillConnected && this.fencePosts.has(gridCellKey(neighbor))) {
+        this.fencePosts.delete(gridCellKey(neighbor));
         this.navigation.setBlocked(neighbor, false);
       }
     }
@@ -420,7 +478,7 @@ export class WorldView {
       this.fenceViews.push(rail);
     }
 
-    for (const cell of this.navigation.getBlockedCells()) {
+    for (const cell of this.fencePosts.values()) {
       const center = gridToScreen(cell);
       const post = new Graphics({ label: `fence-post-${cell.x}-${cell.y}` });
       post
@@ -462,18 +520,86 @@ export class WorldView {
     }
   }
 
+  private drawFacilities(): void {
+    const snapshots = this.facilities.getSnapshots();
+    const signature = snapshots
+      .map(
+        (facility) =>
+          `${facility.id}:${Math.ceil(facility.capacity)}:${facility.available}`,
+      )
+      .join('|');
+    if (signature === this.facilitySignature) return;
+    this.facilitySignature = signature;
+
+    for (const view of this.facilityViews) {
+      view.removeFromParent();
+      view.destroy({ children: true });
+    }
+    this.facilityViews = [];
+
+    for (const facility of snapshots) {
+      const view = new Container({ label: facility.id });
+      const drawing = new Graphics();
+      const water = facility.kind === 'waterBowl';
+      const ratio = facility.capacity / facility.maxCapacity;
+      drawing
+        .ellipse(0, 3, 31, 12)
+        .fill({ color: 0x18382e, alpha: 0.2 })
+        .ellipse(0, -5, 28, 14)
+        .fill({ color: facility.available ? 0xd9c4a1 : 0x9e9b92 })
+        .stroke({ color: 0x795d45, width: 3 })
+        .ellipse(0, -7, 21, 8)
+        .fill({
+          color: facility.available
+            ? water
+              ? 0x62b7d9
+              : 0xc98245
+            : 0x77766f,
+          alpha: facility.available ? 0.9 : 0.45,
+        });
+      if (ratio < 0.35 && facility.available) {
+        drawing
+          .ellipse(0, -7, 12, 4)
+          .fill({ color: 0xe9dcc6, alpha: 0.55 });
+      }
+      view.addChild(drawing);
+
+      if (this.debug) {
+        const capacity = new Text({
+          text: `${water ? 'W' : 'F'} ${Math.ceil(facility.capacity)}`,
+          style: {
+            fill: 0x31483f,
+            fontFamily: 'Segoe UI, sans-serif',
+            fontSize: 11,
+            fontWeight: '700',
+          },
+        });
+        capacity.anchor.set(0.5);
+        capacity.position.set(0, -28);
+        view.addChild(capacity);
+      }
+
+      const center = gridToScreen(facility.cell);
+      view.position.set(center.x, center.y);
+      view.zIndex = Math.round((facility.cell.x + facility.cell.y) * 1000) + 40;
+      this.objectLayer.addChild(view);
+      this.facilityViews.push(view);
+    }
+  }
+
   private createDebugOverlay(): Text {
     const text = new Text({
-      text: 'FPS --',
+      text: '正在读取栖息地状态…',
       style: {
         fill: 0x183c2d,
         fontFamily: 'Segoe UI, Microsoft YaHei, sans-serif',
         fontSize: 13,
         fontWeight: '600',
+        lineHeight: 20,
       },
     });
-    text.position.set(16, 16);
-    this.uiLayer.addChild(text);
+    text.position.set(18, 16);
+    this.uiLayer.addChild(this.debugBackdrop, text);
     return text;
   }
 
@@ -487,7 +613,31 @@ export class WorldView {
         (this.renderedFrames * 1000) / this.elapsedMilliseconds,
       );
       const rabbit = this.rabbit.getSnapshot();
-      this.fpsText.text = `FPS ${fps} · SIM ${this.simulationSteps * 2}/s · NAV v${rabbit.navigationVersion}/R${rabbit.repathCount} · ${this.columns}×${this.rows} · Rabbit ${rabbit.state}/${rabbit.facing} · ${this.app.renderer.type}`;
+      const facilitySummary = this.facilities
+        .getSnapshots()
+        .map(
+          (facility) =>
+            `${facility.kind === 'foodBowl' ? '食盆' : '水盆'} ${Math.ceil(facility.capacity)}/${facility.maxCapacity}${facility.available ? '' : '（空）'}`,
+        )
+        .join(' · ');
+      this.fpsText.text = [
+        `性能  FPS ${fps} · 模拟 ${this.simulationSteps * 2}/s · ${this.app.renderer.type}`,
+        `兔子  ${rabbit.state}/${rabbit.facing}${rabbit.targetFacilityId ? ` → ${rabbit.targetFacilityId}` : ''}`,
+        `需求  H 饥饿 ${Math.round(rabbit.needs.hunger)} · T 口渴 ${Math.round(rabbit.needs.thirst)} · E 精力 ${Math.round(rabbit.needs.energy)}`,
+        `设施  ${facilitySummary}`,
+        `导航  v${rabbit.navigationVersion} · 重新寻路 ${rabbit.repathCount}`,
+      ].join('\n');
+      this.debugBackdrop
+        .clear()
+        .roundRect(
+          8,
+          8,
+          Math.ceil(this.fpsText.width) + 20,
+          Math.ceil(this.fpsText.height) + 16,
+          10,
+        )
+        .fill({ color: 0xf4fbf6, alpha: 0.9 })
+        .stroke({ color: 0xffffff, alpha: 0.72, width: 1 });
       this.elapsedMilliseconds = 0;
       this.renderedFrames = 0;
       this.simulationSteps = 0;
@@ -503,5 +653,10 @@ export class WorldView {
     );
     this.rabbitView.render(this.rabbit.getSnapshot(), ticker.deltaMS);
     this.drawNavigationDebug();
+    this.facilityRenderElapsed += ticker.deltaMS;
+    if (this.facilityRenderElapsed >= 250) {
+      this.drawFacilities();
+      this.facilityRenderElapsed = 0;
+    }
   }
 }

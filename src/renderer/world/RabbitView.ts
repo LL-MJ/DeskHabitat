@@ -6,6 +6,11 @@ import type { RabbitFacing, RabbitSnapshot } from '../../shared/rabbit';
 const STATE_LABELS = {
   idle: '…',
   wander: '♪',
+  seekFood: '⌕',
+  eat: '🥕',
+  seekWater: '⌕',
+  drink: '💧',
+  rest: 'Zz',
 } as const;
 
 export class RabbitView {
@@ -39,7 +44,10 @@ export class RabbitView {
     }
 
     this.animationSeconds += elapsedMilliseconds / 1000;
-    const walking = snapshot.state === 'wander';
+    const walking =
+      snapshot.state === 'wander' ||
+      snapshot.state === 'seekFood' ||
+      snapshot.state === 'seekWater';
     const phase = this.animationSeconds * (walking ? 9 : 2.4);
     this.art.position.y = walking ? Math.abs(Math.sin(phase)) * -3 : Math.sin(phase) * 1.5;
     this.art.rotation = walking ? Math.sin(phase) * 0.025 : 0;
