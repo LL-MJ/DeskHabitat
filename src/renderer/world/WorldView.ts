@@ -15,6 +15,10 @@ import {
   screenToGrid,
   type Point,
 } from '../../shared/isometric';
+import {
+  fenceConnectionKey,
+  rasterizeFenceStroke,
+} from '../../shared/fence';
 import { NavigationGrid, type GridCell } from '../../shared/navigation';
 import { RabbitModel } from '../../shared/rabbit';
 import { FixedStepClock } from '../../shared/simulation';
@@ -29,12 +33,27 @@ export interface WorldViewOptions {
 
 const GROUND_COLORS = [0x78a96f, 0x83b578] as const;
 const GRID_COLOR = 0x315943;
+const FENCE_DWELL_MILLISECONDS = 160;
 const DEFAULT_FENCES: readonly GridCell[] = [
   { x: 2, y: 1 },
   { x: 2, y: 2 },
   { x: 2, y: 3 },
   { x: 3, y: 3 },
 ];
+
+interface FenceConnection {
+  a: GridCell;
+  b: GridCell;
+}
+
+interface FenceStroke {
+  start: GridCell;
+  last: GridCell;
+  candidate: GridCell | null;
+  candidateTimer: number | null;
+  initiallyBlocked: boolean;
+  moved: boolean;
+}
 
 function polygon(graphics: Graphics, points: readonly Point[]): Graphics {
   const [first, ...rest] = points;
@@ -64,7 +83,10 @@ export class WorldView {
   private readonly rabbit: RabbitModel;
   private readonly rabbitView: RabbitView;
   private readonly navigationDebug = new Graphics({ label: 'path-debug' });
+  private readonly fencePreview = new Graphics({ label: 'fence-preview' });
+  private readonly fenceConnections = new Map<string, FenceConnection>();
   private fenceViews: Graphics[] = [];
+  private fenceStroke: FenceStroke | null = null;
   private readonly simulationClock = new FixedStepClock();
   private mode: WindowMode = 'life';
   private simulationSteps = 0;
@@ -89,6 +111,7 @@ export class WorldView {
       this.debugLayer,
     );
     this.app.stage.addChild(this.root, this.uiLayer);
+    this.previewLayer.addChild(this.fencePreview);
 
     this.drawGround();
     this.navigation = new NavigationGrid({
@@ -98,6 +121,11 @@ export class WorldView {
         (cell) => cell.x < this.columns && cell.y < this.rows,
       ),
     });
+    for (let index = 1; index < DEFAULT_FENCES.length; index += 1) {
+      const previous = DEFAULT_FENCES[index - 1];
+      const current = DEFAULT_FENCES[index];
+      if (previous && current) this.addFenceConnection(previous, current);
+    }
     this.rabbit = new RabbitModel({
       columns: this.columns,
       rows: this.rows,
@@ -118,6 +146,10 @@ export class WorldView {
     this.mode = mode;
     this.app.ticker.maxFPS = mode === 'build' ? 60 : 30;
     if (mode !== 'life') this.simulationClock.reset();
+    if (mode !== 'build') {
+      this.clearFenceCandidate();
+      this.fenceStroke = null;
+    }
   }
 
   resize(width: number, height: number): void {
@@ -130,30 +162,119 @@ export class WorldView {
     this.root.scale.set(transform.scale);
   }
 
-  toggleFenceAtViewport(viewport: Point): boolean {
+  beginFenceStrokeAtViewport(viewport: Point): boolean {
     if (this.mode !== 'build') return false;
+    const cell = this.viewportToGridCell(viewport);
+    if (!cell || this.isRabbitCell(cell)) return false;
 
-    const local = {
-      x: (viewport.x - this.root.position.x) / this.root.scale.x,
-      y: (viewport.y - this.root.position.y) / this.root.scale.y,
+    const initiallyBlocked = !this.navigation.isWalkable(cell);
+    if (!initiallyBlocked) this.navigation.setBlocked(cell, true);
+    this.fenceStroke = {
+      start: cell,
+      last: cell,
+      candidate: null,
+      candidateTimer: null,
+      initiallyBlocked,
+      moved: false,
     };
-    const projected = screenToGrid(local);
-    const cell = { x: Math.round(projected.x), y: Math.round(projected.y) };
-    if (!this.navigation.isInside(cell)) return false;
+    this.drawFences();
+    return true;
+  }
 
-    const rabbitPosition = this.rabbit.getSnapshot().position;
+  extendFenceStrokeAtViewport(viewport: Point): boolean {
+    if (this.mode !== 'build' || !this.fenceStroke) return false;
+    const target = this.viewportToGridCell(viewport);
     if (
-      Math.round(rabbitPosition.x) === cell.x &&
-      Math.round(rabbitPosition.y) === cell.y &&
-      this.navigation.isWalkable(cell)
+      !target ||
+      this.isRabbitCell(target) ||
+      (target.x === this.fenceStroke.last.x &&
+        target.y === this.fenceStroke.last.y)
+    ) {
+      this.clearFenceCandidate();
+      return false;
+    }
+    if (
+      this.fenceStroke.candidate?.x === target.x &&
+      this.fenceStroke.candidate.y === target.y
     ) {
       return false;
     }
 
-    this.navigation.toggleBlocked(cell);
+    this.clearFenceCandidate();
+    this.fenceStroke.candidate = target;
+    this.drawFenceCandidatePreview();
+    this.scheduleFenceCandidate();
+    return true;
+  }
+
+  endFenceStroke(): void {
+    if (!this.fenceStroke) return;
+    this.clearFenceCandidate();
+    if (!this.fenceStroke.moved && this.fenceStroke.initiallyBlocked) {
+      this.removeFencePost(this.fenceStroke.start);
+      this.drawFences();
+      this.drawNavigationDebug();
+    }
+    this.fenceStroke = null;
+  }
+
+  private scheduleFenceCandidate(): void {
+    if (!this.fenceStroke?.candidate) return;
+    this.fenceStroke.candidateTimer = window.setTimeout(() => {
+      if (!this.fenceStroke) return;
+      this.fenceStroke.candidateTimer = null;
+      this.commitFenceCandidate();
+    }, FENCE_DWELL_MILLISECONDS);
+  }
+
+  private commitFenceCandidate(): void {
+    const stroke = this.fenceStroke;
+    const target = stroke?.candidate;
+    if (!stroke || !target) return;
+
+    const next = rasterizeFenceStroke(stroke.last, target)[1];
+    if (!next || !this.navigation.isInside(next) || this.isRabbitCell(next)) {
+      this.clearFenceCandidate();
+      return;
+    }
+    if (this.navigation.isWalkable(next)) {
+      this.navigation.setBlocked(next, true);
+    }
+    this.addFenceConnection(stroke.last, next);
+    stroke.last = next;
+    stroke.moved = true;
     this.drawFences();
     this.drawNavigationDebug();
-    return true;
+
+    if (next.x === target.x && next.y === target.y) {
+      this.clearFenceCandidate();
+    } else {
+      this.drawFenceCandidatePreview();
+      this.scheduleFenceCandidate();
+    }
+  }
+
+  private clearFenceCandidate(): void {
+    if (this.fenceStroke?.candidateTimer != null) {
+      window.clearTimeout(this.fenceStroke.candidateTimer);
+    }
+    if (this.fenceStroke) {
+      this.fenceStroke.candidate = null;
+      this.fenceStroke.candidateTimer = null;
+    }
+    this.fencePreview.clear();
+  }
+
+  private drawFenceCandidatePreview(): void {
+    this.fencePreview.clear();
+    const stroke = this.fenceStroke;
+    const target = stroke?.candidate;
+    if (!stroke || !target) return;
+    const next = rasterizeFenceStroke(stroke.last, target)[1];
+    if (!next || !this.navigation.isInside(next)) return;
+    polygon(this.fencePreview, getTileDiamond(next))
+      .fill({ color: 0xffd76a, alpha: 0.22 })
+      .stroke({ color: 0xffd76a, alpha: 0.9, width: 3 });
   }
 
   private drawGround(): void {
@@ -211,6 +332,63 @@ export class WorldView {
     this.debugLayer.addChildAt(grid, 0);
   }
 
+  private viewportToGridCell(viewport: Point): GridCell | null {
+    const projected = this.viewportToGridPosition(viewport);
+    const cell = { x: Math.round(projected.x), y: Math.round(projected.y) };
+    return this.navigation.isInside(cell) ? cell : null;
+  }
+
+  private viewportToGridPosition(viewport: Point): Point {
+    const local = {
+      x: (viewport.x - this.root.position.x) / this.root.scale.x,
+      y: (viewport.y - this.root.position.y) / this.root.scale.y,
+    };
+    return screenToGrid(local);
+  }
+
+  private isRabbitCell(cell: GridCell): boolean {
+    const rabbitPosition = this.rabbit.getSnapshot().position;
+    return (
+      Math.round(rabbitPosition.x) === cell.x &&
+      Math.round(rabbitPosition.y) === cell.y
+    );
+  }
+
+  private addFenceConnection(a: GridCell, b: GridCell): void {
+    const key = fenceConnectionKey(a, b);
+    this.fenceConnections.set(key, { a: { ...a }, b: { ...b } });
+  }
+
+  private removeFencePost(cell: GridCell): void {
+    const connectedNeighbors: GridCell[] = [];
+    for (const connection of this.fenceConnections.values()) {
+      if (connection.a.x === cell.x && connection.a.y === cell.y) {
+        connectedNeighbors.push(connection.b);
+      } else if (connection.b.x === cell.x && connection.b.y === cell.y) {
+        connectedNeighbors.push(connection.a);
+      }
+    }
+
+    this.navigation.setBlocked(cell, false);
+    for (const [key, connection] of this.fenceConnections) {
+      const touchesCell =
+        (connection.a.x === cell.x && connection.a.y === cell.y) ||
+        (connection.b.x === cell.x && connection.b.y === cell.y);
+      if (touchesCell) this.fenceConnections.delete(key);
+    }
+
+    for (const neighbor of connectedNeighbors) {
+      const stillConnected = [...this.fenceConnections.values()].some(
+        (connection) =>
+          (connection.a.x === neighbor.x && connection.a.y === neighbor.y) ||
+          (connection.b.x === neighbor.x && connection.b.y === neighbor.y),
+      );
+      if (!stillConnected && !this.navigation.isWalkable(neighbor)) {
+        this.navigation.setBlocked(neighbor, false);
+      }
+    }
+  }
+
   private drawFences(): void {
     for (const fence of this.fenceViews) {
       fence.removeFromParent();
@@ -218,51 +396,43 @@ export class WorldView {
     }
     this.fenceViews = [];
 
-    const blocked = this.navigation.getBlockedCells();
-    const blockedKeys = new Set(blocked.map((cell) => `${cell.x},${cell.y}`));
-    for (const cell of blocked) {
+    for (const connection of this.fenceConnections.values()) {
+      const start = gridToScreen(connection.a);
+      const end = gridToScreen(connection.b);
+      const rail = new Graphics({ label: 'fence-rail' });
+      rail
+        .moveTo(0, -18)
+        .lineTo(end.x - start.x, end.y - start.y - 18)
+        .moveTo(0, -9)
+        .lineTo(end.x - start.x, end.y - start.y - 9)
+        .stroke({ color: 0x8b5e3c, width: 5, cap: 'round' });
+      rail.position.set(start.x, start.y);
+      rail.zIndex =
+        Math.round(
+          ((connection.a.x +
+            connection.a.y +
+            connection.b.x +
+            connection.b.y) /
+            2) *
+            1000,
+        ) + 30;
+      this.objectLayer.addChild(rail);
+      this.fenceViews.push(rail);
+    }
+
+    for (const cell of this.navigation.getBlockedCells()) {
       const center = gridToScreen(cell);
-      const fence = new Graphics({ label: `fence-${cell.x}-${cell.y}` });
-      const connections = [
-        { x: cell.x + 1, y: cell.y },
-        { x: cell.x, y: cell.y + 1 },
-        { x: cell.x - 1, y: cell.y },
-        { x: cell.x, y: cell.y - 1 },
-      ].filter((neighbor) => blockedKeys.has(`${neighbor.x},${neighbor.y}`));
-
-      if (connections.length === 0) {
-        fence
-          .moveTo(-28, -17)
-          .lineTo(28, -17)
-          .moveTo(-24, -8)
-          .lineTo(24, -8)
-          .stroke({ color: 0x8b5e3c, width: 5, cap: 'round' });
-      } else {
-        for (const neighbor of connections) {
-          const neighborCenter = gridToScreen(neighbor);
-          const delta = {
-            x: neighborCenter.x - center.x,
-            y: neighborCenter.y - center.y,
-          };
-          fence
-            .moveTo(0, -18)
-            .lineTo(delta.x, delta.y - 18)
-            .moveTo(0, -9)
-            .lineTo(delta.x, delta.y - 9)
-            .stroke({ color: 0x8b5e3c, width: 5, cap: 'round' });
-        }
-      }
-
-      fence
+      const post = new Graphics({ label: `fence-post-${cell.x}-${cell.y}` });
+      post
         .moveTo(0, -31)
         .lineTo(0, 3)
         .stroke({ color: 0x65402b, width: 7, cap: 'round' })
         .circle(0, -31, 4)
         .fill({ color: 0xc08a59 });
-      fence.position.set(center.x, center.y);
-      fence.zIndex = Math.round((cell.x + cell.y) * 1000) + 50;
-      this.objectLayer.addChild(fence);
-      this.fenceViews.push(fence);
+      post.position.set(center.x, center.y);
+      post.zIndex = Math.round((cell.x + cell.y) * 1000) + 50;
+      this.objectLayer.addChild(post);
+      this.fenceViews.push(post);
     }
   }
 

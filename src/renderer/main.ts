@@ -21,7 +21,10 @@ function renderWindowState(state: WindowState): void {
     build: '布置模式',
     paused: '已暂停',
   };
-  const buildHint = state.mode === 'build' ? ' · 点击草地格切换栅栏' : '';
+  const buildHint =
+    state.mode === 'build'
+      ? ' · 按住连续绘制（候选格短暂停留后确认），单击已有栅栏删除'
+      : '';
   status.textContent = `${modeLabels[state.mode]} · ${state.display.label} · ${state.layer === 'overlay' ? '置顶层' : '桌面层'}${buildHint}`;
 
   for (const button of document.querySelectorAll<HTMLButtonElement>(
@@ -59,9 +62,32 @@ async function bootstrap(): Promise<void> {
   world.setMode(state.mode);
   document.title = `DeskHabitat ${version}`;
   renderWindowState(state);
+  const pointerPosition = (event: PointerEvent) => {
+    const bounds = pixi.canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    };
+  };
   pixi.canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
-    world.toggleFenceAtViewport({ x: event.offsetX, y: event.offsetY });
+    if (world.beginFenceStrokeAtViewport(pointerPosition(event))) {
+      pixi.canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    }
+  });
+  pixi.canvas.addEventListener('pointermove', (event) => {
+    if ((event.buttons & 1) === 0) return;
+    world.extendFenceStrokeAtViewport(pointerPosition(event));
+  });
+  pixi.canvas.addEventListener('pointerup', (event) => {
+    world.endFenceStroke();
+    if (pixi.canvas.hasPointerCapture(event.pointerId)) {
+      pixi.canvas.releasePointerCapture(event.pointerId);
+    }
+  });
+  pixi.canvas.addEventListener('pointercancel', () => {
+    world.endFenceStroke();
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>(
