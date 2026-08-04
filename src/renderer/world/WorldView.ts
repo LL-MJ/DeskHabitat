@@ -2,6 +2,7 @@ import {
   Application,
   Container,
   Graphics,
+  Sprite,
   Text,
   type Ticker,
 } from 'pixi.js';
@@ -28,6 +29,11 @@ import { RabbitModel } from '../../shared/rabbit';
 import type { SaveSnapshot } from '../../shared/save';
 import { FixedStepClock } from '../../shared/simulation';
 import type { WindowMode } from '../../shared/window';
+import type {
+  OrchardTextureKey,
+  OrchardTextureMap,
+} from '../assets/orchard';
+import { ORCHARD_ASSETS } from '../assets/orchard/manifest';
 import { RabbitView } from './RabbitView';
 
 export interface WorldViewOptions {
@@ -38,9 +44,11 @@ export interface WorldViewOptions {
   offlineSeconds?: number;
   onDirty?: () => void;
   maxFps?: 30 | 60;
+  orchardTextures?: OrchardTextureMap;
 }
 
 const GROUND_COLORS = [0x78a96f, 0x83b578] as const;
+const ORCHARD_TILE_TINTS = [0xffffff, 0xf4f0dc, 0xe8f0dc] as const;
 const GRID_COLOR = 0x315943;
 const FENCE_DWELL_MILLISECONDS = 160;
 const DEFAULT_FENCES: readonly GridCell[] = [
@@ -132,6 +140,7 @@ export class WorldView {
   private gameTimeSeconds = 0;
   private readonly worldId: string;
   private readonly onDirty: (() => void) | null;
+  private readonly orchardTextures: OrchardTextureMap | undefined;
   private maxLifeFps: 30 | 60;
   private elapsedMilliseconds = 0;
   private renderedFrames = 0;
@@ -147,8 +156,10 @@ export class WorldView {
     this.worldId = saved?.worldId ?? 'default-habitat';
     this.gameTimeSeconds = saved?.gameTimeSeconds ?? 0;
     this.onDirty = options.onDirty ?? null;
+    this.orchardTextures = options.orchardTextures;
     this.maxLifeFps = options.maxFps ?? 30;
     this.objectLayer.sortableChildren = true;
+    this.decorationLayer.sortableChildren = true;
     this.root.addChild(
       this.shadowLayer,
       this.groundLayer,
@@ -163,6 +174,7 @@ export class WorldView {
     this.previewLayer.addChild(this.buildObjectPreview);
 
     this.drawGround();
+    this.drawOrchardDecorations();
     const initialFencePosts = saved?.fencePosts ?? DEFAULT_FENCES;
     this.navigation = new NavigationGrid({
       columns: this.columns,
@@ -624,17 +636,113 @@ export class WorldView {
     shadow.position.y = 14;
     this.shadowLayer.addChild(shadow);
 
-    const ground = new Graphics();
-    for (let gridY = 0; gridY < this.rows; gridY += 1) {
-      for (let gridX = 0; gridX < this.columns; gridX += 1) {
-        polygon(ground, getTileDiamond({ x: gridX, y: gridY }))
-          .fill({ color: GROUND_COLORS[(gridX + gridY) % 2]! })
-          .stroke({ color: 0x527f5c, alpha: 0.42, width: 1 });
+    const orchardTexture = this.orchardTextures?.grassTile;
+    if (orchardTexture) {
+      for (let gridY = 0; gridY < this.rows; gridY += 1) {
+        for (let gridX = 0; gridX < this.columns; gridX += 1) {
+          const tile = new Sprite({ texture: orchardTexture });
+          const center = gridToScreen({ x: gridX, y: gridY });
+          tile.anchor.set(0.5);
+          tile.position.set(center.x, center.y);
+          tile.width = ORCHARD_ASSETS.grassTile.logicalSize.width;
+          tile.height = ORCHARD_ASSETS.grassTile.logicalSize.height;
+          tile.tint = ORCHARD_TILE_TINTS[(gridX * 2 + gridY) % 3]!;
+          tile.eventMode = 'none';
+          this.groundLayer.addChild(tile);
+        }
       }
+    } else {
+      const ground = new Graphics();
+      for (let gridY = 0; gridY < this.rows; gridY += 1) {
+        for (let gridX = 0; gridX < this.columns; gridX += 1) {
+          polygon(ground, getTileDiamond({ x: gridX, y: gridY }))
+            .fill({ color: GROUND_COLORS[(gridX + gridY) % 2]! })
+            .stroke({ color: 0x527f5c, alpha: 0.42, width: 1 });
+        }
+      }
+      this.groundLayer.addChild(ground);
     }
-    this.groundLayer.addChild(ground);
 
     if (this.debug) this.drawDebugGrid();
+  }
+
+  private drawOrchardDecorations(): void {
+    const textures = this.orchardTextures;
+    if (!textures) return;
+
+    this.addOrchardObject(
+      textures.appleTree,
+      ORCHARD_ASSETS.appleTree.logicalSize,
+      { x: 0.8, y: 4.9 },
+      5,
+    );
+    this.addOrchardObject(
+      textures.shelter,
+      ORCHARD_ASSETS.shelter.logicalSize,
+      { x: 6.2, y: 0.8 },
+      4,
+    );
+    this.addOrchardObject(
+      textures.appleBasket,
+      ORCHARD_ASSETS.appleBasket.logicalSize,
+      { x: 5.2, y: 1.5 },
+      7,
+    );
+
+    const flowerPositions: readonly Point[] = [
+      { x: 0.75, y: 4.2 },
+      { x: 4.6, y: 0.45 },
+      { x: 6.65, y: 3.6 },
+    ];
+    for (const [index, position] of flowerPositions.entries()) {
+      const flowers = this.createOrchardSprite(
+        textures.wildflowers,
+        { width: 58, height: 58 },
+        position,
+      );
+      flowers.alpha = 0.9;
+      flowers.zIndex = Math.round((position.x + position.y) * 1000) + index;
+      this.decorationLayer.addChild(flowers);
+    }
+
+    const stonePositions: readonly Point[] = [
+      { x: 5.55, y: 5.15 },
+      { x: 6.55, y: 5.15 },
+    ];
+    for (const position of stonePositions) {
+      this.addOrchardObject(
+        textures.stoneEdge,
+        { width: 128, height: 78 },
+        position,
+        3,
+      );
+    }
+  }
+
+  private addOrchardObject(
+    texture: OrchardTextureMap[OrchardTextureKey],
+    size: { width: number; height: number },
+    position: Point,
+    zOffset: number,
+  ): void {
+    const sprite = this.createOrchardSprite(texture, size, position);
+    sprite.zIndex = Math.round((position.x + position.y) * 1000) + zOffset;
+    this.objectLayer.addChild(sprite);
+  }
+
+  private createOrchardSprite(
+    texture: OrchardTextureMap[OrchardTextureKey],
+    size: { width: number; height: number },
+    position: Point,
+  ): Sprite {
+    const sprite = new Sprite({ texture });
+    const center = gridToScreen(position);
+    sprite.anchor.set(0.5, 1);
+    sprite.position.set(center.x, center.y + 12);
+    sprite.width = size.width;
+    sprite.height = size.height;
+    sprite.eventMode = 'none';
+    return sprite;
   }
 
   private drawDebugGrid(): void {

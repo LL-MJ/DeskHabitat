@@ -4,6 +4,7 @@ import { Application } from 'pixi.js';
 import { normalizePixelRatio } from '../shared/runtime';
 import { calculateOfflineSeconds } from '../shared/save';
 import type { WindowMode, WindowState } from '../shared/window';
+import { loadOrchardTextures } from './assets/orchard';
 import './styles/global.css';
 import { WorldView, type BuildFeedback, type BuildTool } from './world/WorldView';
 
@@ -72,6 +73,8 @@ async function bootstrap(): Promise<void> {
   pixi.canvas.setAttribute('aria-hidden', 'true');
   root.prepend(pixi.canvas);
 
+  const orchardTextures = await loadOrchardTextures();
+
   const [version, state, saveLoad, settings] = await Promise.all([
     window.deskHabitat.app.getVersion(),
     window.deskHabitat.window.getState(),
@@ -112,6 +115,7 @@ async function bootstrap(): Promise<void> {
       : 0;
   const world = new WorldView(pixi, {
     debug: state.debugWindow,
+    orchardTextures,
     ...(saveLoad.envelope
       ? { initialSnapshot: saveLoad.envelope.data }
       : {}),
