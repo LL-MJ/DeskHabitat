@@ -14,7 +14,10 @@ import {
   gridToScreen,
   type Point,
 } from '../../shared/isometric';
+import { RabbitModel } from '../../shared/rabbit';
+import { FixedStepClock } from '../../shared/simulation';
 import type { WindowMode } from '../../shared/window';
+import { RabbitView } from './RabbitView';
 
 export interface WorldViewOptions {
   columns?: number;
@@ -49,6 +52,11 @@ export class WorldView {
   private readonly rows: number;
   private readonly debug: boolean;
   private readonly fpsText: Text | null;
+  private readonly rabbit: RabbitModel;
+  private readonly rabbitView: RabbitView;
+  private readonly simulationClock = new FixedStepClock();
+  private mode: WindowMode = 'life';
+  private simulationSteps = 0;
   private elapsedMilliseconds = 0;
   private renderedFrames = 0;
 
@@ -72,13 +80,23 @@ export class WorldView {
     this.app.stage.addChild(this.root, this.uiLayer);
 
     this.drawGround();
+    this.rabbit = new RabbitModel({
+      columns: this.columns,
+      rows: this.rows,
+    });
+    this.rabbitView = new RabbitView();
+    this.objectLayer.addChild(this.rabbitView.root);
+    this.rabbitView.render(this.rabbit.getSnapshot(), 0);
     this.fpsText = this.debug ? this.createDebugOverlay() : null;
+    this.app.ticker.add(this.updateSimulation, this);
     this.app.ticker.add(this.updateDebugOverlay, this);
     this.resize(window.innerWidth, window.innerHeight);
   }
 
   setMode(mode: WindowMode): void {
+    this.mode = mode;
     this.app.ticker.maxFPS = mode === 'build' ? 60 : 30;
+    if (mode !== 'life') this.simulationClock.reset();
   }
 
   resize(width: number, height: number): void {
@@ -170,9 +188,21 @@ export class WorldView {
       const fps = Math.round(
         (this.renderedFrames * 1000) / this.elapsedMilliseconds,
       );
-      this.fpsText.text = `FPS ${fps} · ${this.columns}×${this.rows} · ${this.app.renderer.type}`;
+      const rabbit = this.rabbit.getSnapshot();
+      this.fpsText.text = `FPS ${fps} · SIM ${this.simulationSteps * 2}/s · ${this.columns}×${this.rows} · Rabbit ${rabbit.state}/${rabbit.facing} · ${this.app.renderer.type}`;
       this.elapsedMilliseconds = 0;
       this.renderedFrames = 0;
+      this.simulationSteps = 0;
     }
+  }
+
+  private updateSimulation(ticker: Ticker): void {
+    if (this.mode !== 'life') return;
+
+    this.simulationSteps += this.simulationClock.advance(
+      ticker.deltaMS,
+      (stepSeconds) => this.rabbit.step(stepSeconds),
+    );
+    this.rabbitView.render(this.rabbit.getSnapshot(), ticker.deltaMS);
   }
 }
