@@ -33,11 +33,15 @@ describe('fixed-step simulation clock', () => {
 });
 
 describe('rabbit simulation', () => {
-  it('selects a screen-facing direction from grid movement', () => {
-    assert.equal(selectRabbitFacing({ x: 1, y: 0 }), 'south');
-    assert.equal(selectRabbitFacing({ x: 0, y: 1 }), 'south');
+  it('selects all four facings from grid movement', () => {
+    assert.equal(selectRabbitFacing({ x: 1, y: 0 }), 'east');
+    assert.equal(selectRabbitFacing({ x: -1, y: 0 }), 'west');
+    assert.equal(selectRabbitFacing({ x: 0, y: 1 }), 'west');
+    assert.equal(selectRabbitFacing({ x: 0, y: -1 }), 'east');
     assert.equal(selectRabbitFacing({ x: 1, y: -1 }), 'east');
     assert.equal(selectRabbitFacing({ x: -1, y: 1 }), 'west');
+    assert.equal(selectRabbitFacing({ x: 1, y: 1 }), 'south');
+    assert.equal(selectRabbitFacing({ x: -1, y: -1 }), 'north');
   });
 
   it('alternates between idle and wandering without leaving the map', () => {

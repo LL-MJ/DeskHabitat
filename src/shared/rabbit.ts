@@ -81,11 +81,9 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 export function selectRabbitFacing(delta: Point): RabbitFacing {
   const screenX = delta.x - delta.y;
-  const screenY = delta.x + delta.y;
+  if (Math.abs(screenX) > 0.0001) return screenX > 0 ? 'east' : 'west';
 
-  if (Math.abs(screenX) > Math.abs(screenY)) {
-    return screenX >= 0 ? 'east' : 'west';
-  }
+  const screenY = delta.x + delta.y;
   return screenY >= 0 ? 'south' : 'north';
 }
 

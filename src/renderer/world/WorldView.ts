@@ -40,6 +40,7 @@ import { FixedStepClock } from '../../shared/simulation';
 import type { WindowMode } from '../../shared/window';
 import type { OrchardTextureMap } from '../assets/orchard';
 import { ORCHARD_ASSETS } from '../assets/orchard/manifest';
+import type { RabbitTextureMap } from '../assets/rabbit';
 import { RabbitView } from './RabbitView';
 
 export interface WorldViewOptions {
@@ -51,6 +52,7 @@ export interface WorldViewOptions {
   onDirty?: () => void;
   maxFps?: 30 | 60;
   orchardTextures?: OrchardTextureMap;
+  rabbitTextures?: RabbitTextureMap;
 }
 
 const GROUND_COLORS = [0x78a96f, 0x83b578] as const;
@@ -216,12 +218,12 @@ export class WorldView {
     this.root.addChild(
       this.shadowLayer,
       this.groundLayer,
+      this.debugLayer,
       this.castShadowLayer,
       this.decorationLayer,
       this.objectLayer,
       this.effectLayer,
       this.previewLayer,
-      this.debugLayer,
     );
     this.app.stage.addChild(this.root, this.uiLayer);
     this.previewLayer.addChild(this.fencePreview);
@@ -334,7 +336,7 @@ export class WorldView {
         : {}),
     });
     this.rabbit.applyOfflineProgress(options.offlineSeconds ?? 0);
-    this.rabbitView = new RabbitView();
+    this.rabbitView = new RabbitView(options.rabbitTextures);
     this.objectLayer.addChild(this.rabbitView.root);
     this.drawFences();
     this.drawFacilities();
