@@ -1,4 +1,5 @@
 import type { FacilityKind } from './facility';
+import type { DecorationDefinition } from './decoration';
 import type { Point } from './isometric';
 import type { GridCell } from './navigation';
 import type { RabbitFacing, RabbitNeeds, RabbitState } from './rabbit';
@@ -7,6 +8,22 @@ import type { WindowLayer } from './window';
 export const SAVE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const MAX_OFFLINE_SECONDS = 8 * 60 * 60;
+
+const DECORATION_KINDS = new Set([
+  'appleTree',
+  'shelter',
+  'appleBasket',
+  'wildflowers',
+  'stoneEdge',
+]);
+
+function isOrchardDecorationKind(value: unknown): boolean {
+  return typeof value === 'string' && DECORATION_KINDS.has(value);
+}
+
+function isDecorationRotation(value: unknown): boolean {
+  return value === 0 || value === 90 || value === 180 || value === 270;
+}
 
 export interface SavedRabbit {
   position: Point;
@@ -37,6 +54,7 @@ export interface SaveSnapshot {
   facilities: SavedFacility[];
   fencePosts: GridCell[];
   fenceConnections: SavedFenceConnection[];
+  decorations?: DecorationDefinition[];
   gameTimeSeconds: number;
   lastOnlineAt: string;
 }
@@ -167,10 +185,12 @@ export function isSaveSnapshot(value: unknown): value is SaveSnapshot {
   const facilities = value['facilities'];
   const fencePosts = value['fencePosts'];
   const fenceConnections = value['fenceConnections'];
+  const decorations = value['decorations'];
   if (
     !Array.isArray(facilities) ||
     !Array.isArray(fencePosts) ||
     !Array.isArray(fenceConnections) ||
+    (decorations !== undefined && !Array.isArray(decorations)) ||
     !fencePosts.every(isGridCell) ||
     !fencePosts.every(isInside)
   ) {
@@ -202,6 +222,28 @@ export function isSaveSnapshot(value: unknown): value is SaveSnapshot {
     }
     ids.add(facility['id']);
     occupiedCells.add(`${facility['cell'].x},${facility['cell'].y}`);
+  }
+  const decorationIds = new Set<string>();
+  if (Array.isArray(decorations)) {
+    for (const decoration of decorations) {
+      if (
+        !isRecord(decoration) ||
+        typeof decoration['id'] !== 'string' ||
+        decoration['id'].length === 0 ||
+        decorationIds.has(decoration['id']) ||
+        !isOrchardDecorationKind(decoration['kind']) ||
+        !isPoint(decoration['position']) ||
+        decoration['position'].x < 0 ||
+        decoration['position'].y < 0 ||
+        decoration['position'].x > columns - 1 ||
+        decoration['position'].y > rows - 1 ||
+        !isDecorationRotation(decoration['rotation']) ||
+        typeof decoration['mirrored'] !== 'boolean'
+      ) {
+        return false;
+      }
+      decorationIds.add(decoration['id']);
+    }
   }
   return fenceConnections.every(
     (connection) => {

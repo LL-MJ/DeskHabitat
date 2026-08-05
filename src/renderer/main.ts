@@ -137,6 +137,10 @@ async function bootstrap(): Promise<void> {
     )) {
       button.disabled = !feedback.selected;
     }
+    const mirrorButton = document.querySelector<HTMLButtonElement>(
+      '[data-build-action="mirror"]',
+    );
+    if (mirrorButton) mirrorButton.disabled = !feedback.mirrorable;
   };
   const activateBuildTool = (tool: BuildTool) => {
     for (const button of document.querySelectorAll<HTMLButtonElement>(
@@ -199,6 +203,11 @@ async function bootstrap(): Promise<void> {
       showBuildFeedback(world.deleteBuildSelection());
     });
   document
+    .querySelector<HTMLButtonElement>('[data-build-action="mirror"]')
+    ?.addEventListener('click', () => {
+      showBuildFeedback(world.mirrorBuildSelection());
+    });
+  document
     .querySelector<HTMLButtonElement>('[data-build-action="cancel"]')
     ?.addEventListener('click', () => {
       showBuildFeedback(world.cancelBuildInteraction());
@@ -211,6 +220,8 @@ async function bootstrap(): Promise<void> {
       showBuildFeedback(world.cancelBuildInteraction());
     } else if (event.key.toLowerCase() === 'r') {
       showBuildFeedback(world.rotateBuildSelection());
+    } else if (event.key.toLowerCase() === 'm') {
+      showBuildFeedback(world.mirrorBuildSelection());
     }
   });
 

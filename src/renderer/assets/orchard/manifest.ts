@@ -37,7 +37,7 @@ export const ORCHARD_ASSETS = {
   },
   wildflowers: {
     file: 'wildflowers.png',
-    logicalSize: { width: 96, height: 96 },
+    logicalSize: { width: 58, height: 58 },
     anchor: { x: 0.5, y: 1 },
     footprint: { columns: 1, rows: 1 },
     layer: 'decoration',

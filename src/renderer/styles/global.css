@@ -112,7 +112,7 @@ body[data-mode="build"] #mode-panel {
   left: 20px;
   z-index: 3;
   display: none;
-  width: 292px;
+  width: min(520px, calc(100vw - 40px));
   gap: 8px;
   padding: 10px;
   border: 1px solid rgb(255 255 255 / 72%);
@@ -130,6 +130,14 @@ body[data-mode="build"] #build-toolbar {
 .build-actions {
   display: flex;
   gap: 5px;
+}
+
+.build-tools {
+  flex-wrap: wrap;
+}
+
+.build-tools button {
+  flex: 1 1 64px;
 }
 
 #build-toolbar button {

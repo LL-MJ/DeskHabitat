@@ -33,6 +33,15 @@ const snapshot: SaveSnapshot = {
   ],
   fencePosts: [{ x: 2, y: 2 }],
   fenceConnections: [],
+  decorations: [
+    {
+      id: 'apple_tree_01',
+      kind: 'appleTree',
+      position: { x: 1.25, y: 3.5 },
+      rotation: 90,
+      mirrored: true,
+    },
+  ],
   gameTimeSeconds: 120,
   lastOnlineAt: '2026-08-04T00:00:00.000Z',
 };
@@ -64,6 +73,23 @@ describe('save validation', () => {
         appVersion: '0.1.0',
         savedAt: '2026-08-04T00:00:00.000Z',
         data: { ...snapshot, columns: 0 },
+      }),
+      null,
+    );
+    assert.equal(
+      parseSaveEnvelope({
+        schemaVersion: SAVE_SCHEMA_VERSION,
+        appVersion: '0.1.0',
+        savedAt: '2026-08-04T00:00:00.000Z',
+        data: {
+          ...snapshot,
+          decorations: [
+            {
+              ...snapshot.decorations![0]!,
+              position: { x: 99, y: 2 },
+            },
+          ],
+        },
       }),
       null,
     );
