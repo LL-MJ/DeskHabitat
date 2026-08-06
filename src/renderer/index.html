@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; connect-src 'self' data: blob:; style-src 'self'; img-src 'self' data: blob:;"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeskHabitat</title>
+  </head>
+  <body>
+    <main id="app" aria-label="DeskHabitat">
+      <div id="status" role="status">正在唤醒栖息地…</div>
+      <nav id="mode-panel" aria-label="栖息地模式">
+        <button type="button" data-mode="life">生活模式</button>
+        <button type="button" data-mode="build">布置模式</button>
+        <button type="button" data-mode="paused">暂停</button>
+      </nav>
+      <aside id="build-toolbar" aria-label="布置工具栏">
+        <div class="build-tools" role="group" aria-label="布置工具">
+          <button type="button" data-build-tool="select">选择</button>
+          <button type="button" data-build-tool="fence">栅栏</button>
+          <button type="button" data-build-tool="foodBowl">食盆</button>
+          <button type="button" data-build-tool="waterBowl">水盆</button>
+          <button type="button" data-build-tool="appleTree">果树</button>
+          <button type="button" data-build-tool="shelter">小屋</button>
+          <button type="button" data-build-tool="appleBasket">果篮</button>
+          <button type="button" data-build-tool="wildflowers">花丛</button>
+          <button type="button" data-build-tool="stoneEdge">石块</button>
+        </div>
+        <div class="build-actions" role="group" aria-label="对象操作">
+          <button type="button" data-build-action="rotate">旋转</button>
+          <button type="button" data-build-action="mirror">镜像</button>
+          <button type="button" data-build-action="delete">删除</button>
+          <button type="button" data-build-action="cancel">取消</button>
+        </div>
+        <div id="build-message" role="status">选择工具开始布置</div>
+      </aside>
+    </main>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
