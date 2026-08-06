@@ -29,6 +29,8 @@ by the `#` character in the repository's parent directory.
 | `apple-basket.png` | 1 x 1 | object |
 | `wildflowers.png` | 1 x 1 | decoration |
 | `stone-edge.png` | one grid edge | object |
+| `soil-edge.png` | both continuous visible world edges | ground base |
+| `fallen-apple.png` | dynamic loose object | object |
 
 ## Generation prompt set
 
@@ -40,9 +42,15 @@ ground plane, text, UI, watermark, or unrelated props.
 
 The per-asset subjects were: a broad asymmetric apple tree; a four-post open
 moss-roof shelter; a shallow woven apple basket; a sparse wildflower tuft; one
-clean 2:1 grass diamond; and a low connecting dry-stone edge segment.
+clean 2:1 grass diamond; a low connecting dry-stone edge segment; and one
+continuous constant-thickness soil ribbon with a grassy lip.
 
 The chroma-key sources were converted to RGBA with the Codex image-generation
 skill's removal helper using soft matte, despill, and a one-pixel edge
 contraction. `scripts/process_chroma_assets.py` then trims and normalizes the
 output textures.
+
+The soil edge source intentionally retains transparent canvas padding. Its
+effective alpha bounds are framed at load time, then an affine transform maps
+the same continuous ribbon onto both visible world faces while preserving a
+constant 18 px vertical thickness.

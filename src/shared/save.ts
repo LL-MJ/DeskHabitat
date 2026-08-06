@@ -2,6 +2,7 @@ import type { FacilityKind } from './facility';
 import type { DecorationDefinition } from './decoration';
 import type { Point } from './isometric';
 import type { GridCell } from './navigation';
+import type { AppleSnapshot } from './physics';
 import type { RabbitFacing, RabbitNeeds, RabbitState } from './rabbit';
 import type { WindowLayer } from './window';
 
@@ -55,6 +56,7 @@ export interface SaveSnapshot {
   fencePosts: GridCell[];
   fenceConnections: SavedFenceConnection[];
   decorations?: DecorationDefinition[];
+  apples?: AppleSnapshot[];
   gameTimeSeconds: number;
   lastOnlineAt: string;
 }
@@ -186,11 +188,13 @@ export function isSaveSnapshot(value: unknown): value is SaveSnapshot {
   const fencePosts = value['fencePosts'];
   const fenceConnections = value['fenceConnections'];
   const decorations = value['decorations'];
+  const apples = value['apples'];
   if (
     !Array.isArray(facilities) ||
     !Array.isArray(fencePosts) ||
     !Array.isArray(fenceConnections) ||
     (decorations !== undefined && !Array.isArray(decorations)) ||
+    (apples !== undefined && !Array.isArray(apples)) ||
     !fencePosts.every(isGridCell) ||
     !fencePosts.every(isInside)
   ) {
@@ -243,6 +247,30 @@ export function isSaveSnapshot(value: unknown): value is SaveSnapshot {
         return false;
       }
       decorationIds.add(decoration['id']);
+    }
+  }
+  const appleIds = new Set<string>();
+  if (Array.isArray(apples)) {
+    if (apples.length > 12) return false;
+    for (const apple of apples) {
+      if (
+        !isRecord(apple) ||
+        typeof apple['id'] !== 'string' ||
+        apple['id'].length === 0 ||
+        appleIds.has(apple['id']) ||
+        !isPoint(apple['position']) ||
+        !isPoint(apple['velocity']) ||
+        apple['position'].x < 0 ||
+        apple['position'].y < 0 ||
+        apple['position'].x > columns - 1 ||
+        apple['position'].y > rows - 1 ||
+        !isFiniteNumber(apple['z']) ||
+        apple['z'] < 0 ||
+        !isFiniteNumber(apple['velocityZ'])
+      ) {
+        return false;
+      }
+      appleIds.add(apple['id']);
     }
   }
   return fenceConnections.every(

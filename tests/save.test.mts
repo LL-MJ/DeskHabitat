@@ -42,6 +42,15 @@ const snapshot: SaveSnapshot = {
       mirrored: true,
     },
   ],
+  apples: [
+    {
+      id: 'fallen_apple_1',
+      position: { x: 2.5, y: 3 },
+      velocity: { x: 0.1, y: 0 },
+      z: 0,
+      velocityZ: 0,
+    },
+  ],
   gameTimeSeconds: 120,
   lastOnlineAt: '2026-08-04T00:00:00.000Z',
 };
@@ -89,6 +98,18 @@ describe('save validation', () => {
               position: { x: 99, y: 2 },
             },
           ],
+        },
+      }),
+      null,
+    );
+    assert.equal(
+      parseSaveEnvelope({
+        schemaVersion: SAVE_SCHEMA_VERSION,
+        appVersion: '0.1.0',
+        savedAt: '2026-08-04T00:00:00.000Z',
+        data: {
+          ...snapshot,
+          apples: [{ ...snapshot.apples![0]!, z: -1 }],
         },
       }),
       null,

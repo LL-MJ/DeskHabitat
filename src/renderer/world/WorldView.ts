@@ -3,6 +3,7 @@ import {
   BlurFilter,
   Container,
   Graphics,
+  Matrix,
   Sprite,
   Text,
   type Ticker,
@@ -11,6 +12,7 @@ import {
 import {
   constrainDecorationPosition,
   DEFAULT_ORCHARD_DECORATIONS,
+  getShelterPillarCells,
   isOrchardDecorationKind,
   rotateDecoration,
   type DecorationDefinition,
@@ -34,6 +36,11 @@ import {
   type FacilityDefinition,
 } from '../../shared/facility';
 import { NavigationGrid, type GridCell } from '../../shared/navigation';
+import {
+  ApplePhysicsWorld,
+  type CircleObstacle,
+  type SegmentObstacle,
+} from '../../shared/physics';
 import { RabbitModel } from '../../shared/rabbit';
 import type { SaveSnapshot } from '../../shared/save';
 import { FixedStepClock } from '../../shared/simulation';
@@ -59,6 +66,7 @@ const GROUND_COLORS = [0x78a96f, 0x83b578] as const;
 const ORCHARD_TILE_TINTS = [0xffffff, 0xf4f0dc, 0xe8f0dc] as const;
 const GRID_COLOR = 0x315943;
 const FENCE_DWELL_MILLISECONDS = 160;
+const GROUND_THICKNESS = 18;
 const DECORATION_DISPLAY_NAMES: Record<OrchardDecorationKind, string> = {
   appleTree: '果树',
   shelter: '小屋',
@@ -103,6 +111,13 @@ interface DecorationView {
   selectionGlow: Sprite;
   castShadow: Sprite;
   contactShadow: Graphics;
+  foregroundGrounding: Graphics;
+}
+
+interface AppleView {
+  root: Container;
+  shadow: Graphics;
+  art: Graphics | Sprite;
 }
 
 interface FenceStroke {
@@ -130,6 +145,7 @@ function polygon(graphics: Graphics, points: readonly Point[]): Graphics {
 export class WorldView {
   readonly root = new Container({ label: 'world-root' });
   readonly shadowLayer = new Container({ label: 'ground-shadow' });
+  readonly groundBaseLayer = new Container({ label: 'ground-base' });
   readonly groundLayer = new Container({ label: 'ground' });
   readonly castShadowLayer = new Container({ label: 'cast-shadows' });
   readonly decorationLayer = new Container({ label: 'ground-decoration' });
@@ -147,6 +163,7 @@ export class WorldView {
   private readonly facilities: FacilitySystem;
   private readonly rabbit: RabbitModel;
   private readonly rabbitView: RabbitView;
+  private readonly applePhysics: ApplePhysicsWorld;
   private readonly debugBackdrop = new Graphics({ label: 'debug-backdrop' });
   private readonly navigationDebug = new Graphics({ label: 'path-debug' });
   private readonly fencePreview = new Graphics({ label: 'fence-preview' });
@@ -170,6 +187,8 @@ export class WorldView {
   private readonly fencePosts = new Map<string, GridCell>();
   private readonly decorations = new Map<string, DecorationDefinition>();
   private readonly decorationViews = new Map<string, DecorationView>();
+  private readonly appleViews = new Map<string, AppleView>();
+  private readonly shelterPillarCells = new Set<string>();
   private fenceViews: Graphics[] = [];
   private facilityViews: Container[] = [];
   private facilitySignature = '';
@@ -188,6 +207,7 @@ export class WorldView {
   private mode: WindowMode = 'life';
   private simulationSteps = 0;
   private facilityRenderElapsed = 0;
+  private appleDropRemainingSeconds = 4;
   private gameTimeSeconds = 0;
   private readonly worldId: string;
   private readonly onDirty: (() => void) | null;
@@ -217,6 +237,7 @@ export class WorldView {
     ];
     this.root.addChild(
       this.shadowLayer,
+      this.groundBaseLayer,
       this.groundLayer,
       this.debugLayer,
       this.castShadowLayer,
@@ -310,6 +331,7 @@ export class WorldView {
       },
     ];
     this.facilities = new FacilitySystem(this.navigation, initialFacilities);
+    this.syncShelterPillarNavigation();
     this.facilityIdCounter = Math.max(
       3,
       ...this.facilities.getSnapshots().map((facility) => {
@@ -337,10 +359,16 @@ export class WorldView {
     });
     this.rabbit.applyOfflineProgress(options.offlineSeconds ?? 0);
     this.rabbitView = new RabbitView(options.rabbitTextures);
+    this.applePhysics = new ApplePhysicsWorld({
+      columns: this.columns,
+      rows: this.rows,
+      ...(saved?.apples ? { initialApples: saved.apples } : {}),
+    });
     this.objectLayer.addChild(this.rabbitView.root);
     this.drawFences();
     this.drawFacilities();
     this.rabbitView.render(this.rabbit.getSnapshot(), 0);
+    this.renderApples();
     if (this.debug) this.debugLayer.addChild(this.navigationDebug);
     this.fpsText = this.debug ? this.createDebugOverlay() : null;
     this.app.ticker.add(this.updateSimulation, this);
@@ -423,6 +451,7 @@ export class WorldView {
         ...decoration,
         position: { ...decoration.position },
       })),
+      apples: this.applePhysics.getSnapshots(),
       gameTimeSeconds: this.gameTimeSeconds,
       lastOnlineAt: new Date().toISOString(),
     };
@@ -614,6 +643,7 @@ export class WorldView {
         origin &&
         (decoration.position.x !== origin.x || decoration.position.y !== origin.y)
       ) {
+        this.syncShelterPillarNavigation();
         this.markDirty();
         return this.buildFeedback('装饰物已移动', true);
       }
@@ -642,6 +672,7 @@ export class WorldView {
         return this.buildFeedback(`已选择 ${id}`, true);
       }
       this.facilities.move(id, this.buildHoverCell);
+      this.syncShelterPillarNavigation();
       const facility = this.facilities.getSnapshot(id);
       if (facility) {
         this.buildSelection = {
@@ -666,6 +697,7 @@ export class WorldView {
       if (!decoration) return this.buildFeedback('装饰物不存在', false);
       decoration.rotation = rotateDecoration(decoration.rotation);
       this.updateDecorationView(decoration.id);
+      this.syncShelterPillarNavigation();
       this.markDirty();
       return this.buildFeedback('装饰物已旋转', true);
     }
@@ -705,6 +737,7 @@ export class WorldView {
       this.drawFences();
       this.drawNavigationDebug();
     }
+    this.syncShelterPillarNavigation();
     this.buildSelection = null;
     this.draggedFacilityId = null;
     this.draggedDecorationId = null;
@@ -871,10 +904,13 @@ export class WorldView {
       getTileDiamond({ x: 0, y: this.rows - 1 })[3],
     ];
     polygon(shadow, footprint)
-      .fill({ color: 0x193c2c, alpha: 0.2 })
-      .stroke({ color: 0x244d37, alpha: 0.15, width: 8 });
-    shadow.position.y = 14;
+      .fill({ color: 0x193c2c, alpha: 0.17 })
+      .stroke({ color: 0x244d37, alpha: 0.12, width: 10 });
+    shadow.position.y = GROUND_THICKNESS + 13;
+    shadow.filters = [new BlurFilter({ strength: 4.5, quality: 2 })];
     this.shadowLayer.addChild(shadow);
+
+    this.drawGroundBase(footprint);
 
     const orchardTexture = this.orchardTextures?.grassTile;
     if (orchardTexture) {
@@ -906,6 +942,108 @@ export class WorldView {
     if (this.debug) this.drawDebugGrid();
   }
 
+  private drawGroundBase(footprint: readonly Point[]): void {
+    const top = footprint[0];
+    const right = footprint[1];
+    const bottom = footprint[2];
+    const left = footprint[3];
+    if (!top || !right || !bottom || !left) return;
+
+    const rightBottom = { x: right.x, y: right.y + GROUND_THICKNESS };
+    const bottomBottom = { x: bottom.x, y: bottom.y + GROUND_THICKNESS };
+    const leftBottom = { x: left.x, y: left.y + GROUND_THICKNESS };
+
+    const soilTexture = this.orchardTextures?.soilEdge;
+    if (soilTexture) {
+      const addContinuousFace = (
+        start: Point,
+        end: Point,
+        tint: number,
+      ): void => {
+        const face = new Sprite({ texture: soilTexture });
+        const sourceWidth = soilTexture.frame.width;
+        const sourceHeight = soilTexture.frame.height;
+        face.setFromMatrix(
+          new Matrix(
+            (end.x - start.x) / sourceWidth,
+            (end.y - start.y) / sourceWidth,
+            0,
+            GROUND_THICKNESS / sourceHeight,
+            start.x,
+            start.y,
+          ),
+        );
+        face.tint = tint;
+        face.eventMode = 'none';
+        this.groundBaseLayer.addChild(face);
+      };
+
+      addContinuousFace(right, bottom, 0xe6ded1);
+      addContinuousFace(left, bottom, 0xffffff);
+      return;
+    }
+
+    const base = new Graphics({ label: 'soil-base' });
+
+    polygon(base, [right, bottom, bottomBottom, rightBottom])
+      .fill({ color: 0x9b704c })
+      .stroke({ color: 0x745039, alpha: 0.48, width: 1 });
+    polygon(base, [bottom, left, leftBottom, bottomBottom])
+      .fill({ color: 0xab7d55 })
+      .stroke({ color: 0x76523a, alpha: 0.42, width: 1 });
+
+    base
+      .moveTo(right.x, right.y + 2)
+      .lineTo(bottom.x, bottom.y + 2)
+      .lineTo(left.x, left.y + 2)
+      .stroke({ color: 0xd0a36e, alpha: 0.58, width: 2 });
+    base
+      .moveTo(rightBottom.x, rightBottom.y)
+      .lineTo(bottomBottom.x, bottomBottom.y)
+      .lineTo(leftBottom.x, leftBottom.y)
+      .stroke({ color: 0x5f4232, alpha: 0.62, width: 3 });
+
+    const drawRoot = (
+      start: Point,
+      bend: number,
+      length: number,
+      color: number,
+    ): void => {
+      base
+        .moveTo(start.x, start.y)
+        .quadraticCurveTo(
+          start.x + bend,
+          start.y + length * 0.45,
+          start.x + bend * 0.55,
+          start.y + length,
+        )
+        .stroke({ color, alpha: 0.42, width: 1.2, cap: 'round' });
+    };
+
+    for (const [index, ratio] of [0.14, 0.34, 0.57, 0.78].entries()) {
+      const start = {
+        x: right.x + (bottom.x - right.x) * ratio,
+        y: right.y + (bottom.y - right.y) * ratio + 1,
+      };
+      drawRoot(start, index % 2 === 0 ? -3 : 4, 7 + (index % 3) * 3, 0x684b35);
+    }
+    for (const [index, ratio] of [0.2, 0.46, 0.7, 0.88].entries()) {
+      const start = {
+        x: left.x + (bottom.x - left.x) * ratio,
+        y: left.y + (bottom.y - left.y) * ratio + 1,
+      };
+      drawRoot(start, index % 2 === 0 ? 3 : -4, 6 + (index % 3) * 3, 0x74543a);
+    }
+
+    base
+      .ellipse(bottom.x - 116, bottom.y + 11, 3.5, 2)
+      .ellipse(bottom.x + 82, bottom.y + 8, 2.7, 1.6)
+      .ellipse(bottom.x + 168, bottom.y - 33, 3.2, 1.8)
+      .fill({ color: 0x72513c, alpha: 0.42 });
+
+    this.groundBaseLayer.addChild(base);
+  }
+
   private drawOrchardDecorations(): void {
     const textures = this.orchardTextures;
     if (!textures) return;
@@ -915,10 +1053,12 @@ export class WorldView {
       view.selectionGlow.removeFromParent();
       view.castShadow.removeFromParent();
       view.contactShadow.removeFromParent();
+      view.foregroundGrounding.removeFromParent();
       view.sprite.destroy();
       view.selectionGlow.destroy();
       view.castShadow.destroy();
       view.contactShadow.destroy();
+      view.foregroundGrounding.destroy();
     }
     this.decorationViews.clear();
 
@@ -927,15 +1067,18 @@ export class WorldView {
       const selectionGlow = new Sprite({ texture: textures[decoration.kind] });
       const castShadow = new Sprite({ texture: textures[decoration.kind] });
       const contactShadow = new Graphics();
+      const foregroundGrounding = new Graphics();
       sprite.eventMode = 'none';
       selectionGlow.eventMode = 'none';
       castShadow.eventMode = 'none';
       contactShadow.eventMode = 'none';
+      foregroundGrounding.eventMode = 'none';
 
       const layer = ORCHARD_ASSETS[decoration.kind].layer;
       (layer === 'decoration' ? this.decorationLayer : this.objectLayer).addChild(
         selectionGlow,
         sprite,
+        foregroundGrounding,
       );
       this.castShadowLayer.addChild(castShadow, contactShadow);
       this.decorationViews.set(decoration.id, {
@@ -943,6 +1086,7 @@ export class WorldView {
         selectionGlow,
         castShadow,
         contactShadow,
+        foregroundGrounding,
       });
       this.updateDecorationView(decoration.id);
     }
@@ -954,6 +1098,7 @@ export class WorldView {
     if (!decoration || !view) return;
 
     const asset = ORCHARD_ASSETS[decoration.kind];
+    const grounding = asset.grounding;
     const center = gridToScreen(decoration.position);
     const horizontalFlip =
       (decoration.rotation === 90 || decoration.rotation === 270) !==
@@ -987,27 +1132,75 @@ export class WorldView {
 
     view.castShadow.anchor.set(0.5, 1);
     view.castShadow.position.set(
-      center.x + asset.logicalSize.width * 0.11,
-      center.y + 18,
+      center.x + grounding.cast.offsetX,
+      center.y + grounding.cast.offsetY,
     );
-    view.castShadow.width = asset.logicalSize.width * 0.82;
-    view.castShadow.height = Math.max(18, asset.logicalSize.height * 0.28);
+    view.castShadow.width = grounding.cast.width;
+    view.castShadow.height = grounding.cast.height;
     view.castShadow.scale.x =
       Math.abs(view.castShadow.scale.x) * (horizontalFlip ? -1 : 1);
     view.castShadow.skew.x = -0.48;
     view.castShadow.tint = 0x33483b;
-    view.castShadow.alpha = decoration.kind === 'wildflowers' ? 0.08 : 0.15;
+    view.castShadow.alpha = grounding.cast.alpha;
     view.castShadow.blendMode = 'multiply';
     view.castShadow.zIndex = zIndex;
 
-    const contactWidth = Math.max(18, asset.logicalSize.width * 0.24);
-    const contactHeight = Math.max(7, contactWidth * 0.23);
     view.contactShadow.clear();
     view.contactShadow
-      .ellipse(center.x, center.y + 11, contactWidth, contactHeight)
-      .fill({ color: 0x385344, alpha: decoration.kind === 'wildflowers' ? 0.1 : 0.24 });
+      .ellipse(
+        center.x,
+        center.y + grounding.contact.offsetY,
+        grounding.contact.width,
+        grounding.contact.height,
+      )
+      .fill({ color: 0x294638, alpha: grounding.contact.alpha });
     view.contactShadow.blendMode = 'multiply';
     view.contactShadow.zIndex = zIndex + 1;
+
+    this.drawForegroundGrounding(
+      view.foregroundGrounding,
+      center,
+      grounding.foreground,
+      zIndex + 7,
+      horizontalFlip,
+    );
+  }
+
+  private drawForegroundGrounding(
+    graphics: Graphics,
+    center: Point,
+    foreground: { width: number; height: number; alpha: number },
+    zIndex: number,
+    horizontalFlip: boolean,
+  ): void {
+    const direction = horizontalFlip ? -1 : 1;
+    const groundY = center.y + 12;
+    const halfWidth = foreground.width / 2;
+    graphics.clear();
+    graphics
+      .ellipse(center.x, groundY, foreground.width, 3.5)
+      .fill({ color: 0x557b49, alpha: foreground.alpha * 0.18 });
+
+    const bladeOffsets = [-0.43, -0.26, -0.08, 0.15, 0.34, 0.46];
+    for (const [index, offset] of bladeOffsets.entries()) {
+      const x = center.x + halfWidth * offset * 2;
+      const bladeHeight = foreground.height * (0.55 + (index % 3) * 0.18);
+      graphics
+        .moveTo(x, groundY + 1)
+        .quadraticCurveTo(
+          x + direction * (index % 2 === 0 ? -2 : 2),
+          groundY - bladeHeight * 0.55,
+          x + direction * (index % 2 === 0 ? -4 : 4),
+          groundY - bladeHeight,
+        );
+    }
+    graphics.stroke({
+      color: 0x426d3c,
+      alpha: foreground.alpha,
+      width: 1.6,
+      cap: 'round',
+    });
+    graphics.zIndex = zIndex;
   }
 
   private drawDebugGrid(): void {
@@ -1062,6 +1255,7 @@ export class WorldView {
     const id = `${prefix}_${String(this.facilityIdCounter).padStart(2, '0')}`;
     this.facilityIdCounter += 1;
     const facility = this.facilities.place({ id, kind, cell });
+    this.syncShelterPillarNavigation();
     this.buildSelection = {
       type: 'facility',
       id,
@@ -1088,6 +1282,7 @@ export class WorldView {
       mirrored: false,
     };
     this.decorations.set(id, decoration);
+    this.syncShelterPillarNavigation();
     this.buildSelection = { type: 'decoration', id };
     this.buildHoverPosition = { ...position };
     this.drawOrchardDecorations();
@@ -1480,6 +1675,138 @@ export class WorldView {
     }
   }
 
+  private stepApplePhysics(
+    stepSeconds: number,
+    rabbitPosition: Point,
+    rabbitVelocity: Point,
+  ): void {
+    this.appleDropRemainingSeconds -= stepSeconds;
+    if (this.appleDropRemainingSeconds <= 0) {
+      const trees = [...this.decorations.values()].filter(
+        (decoration) => decoration.kind === 'appleTree',
+      );
+      const tree = trees[Math.floor(Math.random() * trees.length)];
+      if (tree && this.applePhysics.spawnFromTree(tree.position)) {
+        this.onDirty?.();
+      }
+      this.appleDropRemainingSeconds = 8 + Math.random() * 6;
+    }
+
+    const circles: CircleObstacle[] = [];
+    for (const cell of this.fencePosts.values()) {
+      circles.push({ position: cell, radius: 0.16 });
+    }
+    for (const facility of this.facilities.getSnapshots()) {
+      circles.push({ position: facility.cell, radius: 0.24 });
+    }
+    for (const decoration of this.decorations.values()) {
+      const radius =
+        decoration.kind === 'appleTree'
+          ? 0.36
+          : decoration.kind === 'shelter'
+            ? 0.68
+            : decoration.kind === 'appleBasket'
+              ? 0.3
+              : decoration.kind === 'stoneEdge'
+                ? 0.25
+                : 0;
+      if (radius > 0) circles.push({ position: decoration.position, radius });
+    }
+    const segments: SegmentObstacle[] = [
+      ...this.fenceConnections.values(),
+    ].map((connection) => ({
+      a: connection.a,
+      b: connection.b,
+      radius: 0.07,
+    }));
+    this.applePhysics.step(stepSeconds, {
+      rabbitPosition,
+      rabbitVelocity,
+      circles,
+      segments,
+    });
+  }
+
+  private renderApples(): void {
+    const snapshots = this.applePhysics.getSnapshots();
+    const visibleIds = new Set(snapshots.map((apple) => apple.id));
+    for (const [id, view] of this.appleViews) {
+      if (visibleIds.has(id)) continue;
+      view.root.removeFromParent();
+      view.root.destroy({ children: true });
+      this.appleViews.delete(id);
+    }
+
+    for (const apple of snapshots) {
+      let view = this.appleViews.get(apple.id);
+      if (!view) {
+        const root = new Container({ label: apple.id });
+        const shadow = new Graphics()
+          .ellipse(0, 2, 6.5, 2.5)
+          .fill({ color: 0x294638, alpha: 0.28 });
+        shadow.blendMode = 'multiply';
+        const appleTexture = this.orchardTextures?.fallenApple;
+        const art = appleTexture
+          ? new Sprite({ texture: appleTexture })
+          : new Graphics()
+              .circle(0, -7, 8)
+              .fill({ color: 0xc96538 })
+              .stroke({ color: 0x753c2c, width: 1.4 })
+              .moveTo(0, -15)
+              .lineTo(1.5, -19)
+              .stroke({ color: 0x65442d, width: 1.5, cap: 'round' });
+        if (art instanceof Sprite) {
+          art.anchor.set(0.5, 1);
+          art.width = 19;
+          art.height = 21;
+        }
+        root.addChild(shadow, art);
+        this.objectLayer.addChild(root);
+        view = { root, shadow, art };
+        this.appleViews.set(apple.id, view);
+      }
+
+      const screen = gridToScreen(apple.position);
+      const heightPixels = apple.z * 42;
+      view.root.position.set(screen.x, screen.y + 9);
+      view.root.zIndex = Math.round(
+        (apple.position.x + apple.position.y) * 1000 + 24,
+      );
+      view.art.position.y = -heightPixels;
+      const shadowScale = Math.max(0.5, 1 - apple.z * 0.22);
+      view.shadow.scale.set(shadowScale, shadowScale);
+      view.shadow.alpha = Math.max(0.28, 1 - apple.z * 0.32);
+    }
+  }
+
+  private syncShelterPillarNavigation(): void {
+    const desired = new Map<string, GridCell>();
+    for (const decoration of this.decorations.values()) {
+      for (const cell of getShelterPillarCells(
+        decoration,
+        this.columns,
+        this.rows,
+      )) {
+        desired.set(gridCellKey(cell), cell);
+      }
+    }
+
+    for (const key of this.shelterPillarCells) {
+      if (desired.has(key)) continue;
+      const [x, y] = key.split(',').map(Number);
+      if (x === undefined || y === undefined) continue;
+      const cell = { x, y };
+      if (!this.fencePosts.has(key) && !this.facilities.getAt(cell)) {
+        this.navigation.setBlocked(cell, false);
+      }
+    }
+    for (const cell of desired.values()) {
+      this.navigation.setBlocked(cell, true);
+    }
+    this.shelterPillarCells.clear();
+    for (const key of desired.keys()) this.shelterPillarCells.add(key);
+  }
+
   private createDebugOverlay(): Text {
     const text = new Text({
       text: '正在读取栖息地状态…',
@@ -1540,14 +1867,22 @@ export class WorldView {
   private updateSimulation(ticker: Ticker): void {
     if (this.mode !== 'life') return;
 
+    let previousRabbitPosition = this.rabbit.getSnapshot().position;
     this.simulationSteps += this.simulationClock.advance(
       ticker.deltaMS,
       (stepSeconds) => {
         this.rabbit.step(stepSeconds);
+        const rabbitPosition = this.rabbit.getSnapshot().position;
+        this.stepApplePhysics(stepSeconds, rabbitPosition, {
+          x: (rabbitPosition.x - previousRabbitPosition.x) / stepSeconds,
+          y: (rabbitPosition.y - previousRabbitPosition.y) / stepSeconds,
+        });
+        previousRabbitPosition = rabbitPosition;
         this.gameTimeSeconds += stepSeconds;
       },
     );
     this.rabbitView.render(this.rabbit.getSnapshot(), ticker.deltaMS);
+    this.renderApples();
     this.drawNavigationDebug();
     this.facilityRenderElapsed += ticker.deltaMS;
     if (this.facilityRenderElapsed >= 250) {

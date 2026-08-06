@@ -33,8 +33,8 @@ export class RabbitView {
 
   constructor(private readonly textures?: RabbitTextureMap) {
     this.shadow
-      .ellipse(0, 2, 29, 10)
-      .fill({ color: 0x315242, alpha: 0.22 });
+      .ellipse(0, 2, 27, 8)
+      .fill({ color: 0x294638, alpha: 0.3 });
     this.shadow.blendMode = 'multiply';
     this.sprite = textures
       ? new Sprite({ texture: textures.idle_a_south })
@@ -57,10 +57,9 @@ export class RabbitView {
     });
     this.bubble.anchor.set(0.5);
     this.bubble.position.set(0, -92);
-    this.art.addChild(this.shadow);
     if (this.sprite) this.art.addChild(this.sprite);
     else this.art.addChild(this.drawing);
-    this.root.addChild(this.art, this.bubble);
+    this.root.addChild(this.shadow, this.art, this.bubble);
   }
 
   render(snapshot: RabbitSnapshot, elapsedMilliseconds: number): void {
@@ -93,6 +92,9 @@ export class RabbitView {
             ? 0.8
             : 1.25;
     const phase = this.animationSeconds * animationRate;
+    const hopHeight = walking
+      ? Math.abs(Math.sin(phase * Math.PI)) * 4.5
+      : 0;
     if (this.textures && this.sprite) {
       const frame = Math.floor(phase) % 2 === 0 ? 'a' : 'b';
       const textureKey: RabbitTextureKey = `${animation}_${frame}_${snapshot.facing}`;
@@ -100,14 +102,17 @@ export class RabbitView {
         this.textureKey = textureKey;
         this.sprite.texture = this.textures[textureKey];
       }
-      this.art.position.y = 0;
-      this.art.rotation = 0;
+      this.art.position.y = -hopHeight;
+      this.art.rotation = Math.sin(phase * Math.PI * 2) * 0.008;
     } else {
       this.art.position.y = walking
         ? Math.abs(Math.sin(phase)) * -3
         : Math.sin(phase) * 1.5;
       this.art.rotation = walking ? Math.sin(phase) * 0.025 : 0;
     }
+    const shadowScale = 1 - hopHeight * 0.025;
+    this.shadow.scale.set(shadowScale, 1 - hopHeight * 0.04);
+    this.shadow.alpha = 1 - hopHeight * 0.055;
     this.bubble.text = STATE_LABELS[snapshot.state];
     this.bubble.alpha = snapshot.state === 'idle' ? 0.72 : 0.5;
 

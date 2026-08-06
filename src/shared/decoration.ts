@@ -1,4 +1,5 @@
 import type { Point } from './isometric';
+import type { GridCell } from './navigation';
 
 export const ORCHARD_DECORATION_KINDS = [
   'appleTree',
@@ -138,4 +139,39 @@ export function rotateDecoration(
   rotation: DecorationRotation,
 ): DecorationRotation {
   return ((rotation + 90) % 360) as DecorationRotation;
+}
+
+export function getShelterPillarCells(
+  decoration: DecorationDefinition,
+  columns: number,
+  rows: number,
+): GridCell[] {
+  if (decoration.kind !== 'shelter') return [];
+  const localOffsets: readonly Point[] = [
+    { x: -1, y: -0.5 },
+    { x: 1, y: -0.5 },
+    { x: -1, y: 0.5 },
+    { x: 1, y: 0.5 },
+  ];
+  const keys = new Set<string>();
+  const cells: GridCell[] = [];
+  for (const offset of localOffsets) {
+    const cell = {
+      x: Math.round(decoration.position.x + offset.x),
+      y: Math.round(decoration.position.y + offset.y),
+    };
+    const key = `${cell.x},${cell.y}`;
+    if (
+      cell.x < 0 ||
+      cell.y < 0 ||
+      cell.x >= columns ||
+      cell.y >= rows ||
+      keys.has(key)
+    ) {
+      continue;
+    }
+    keys.add(key);
+    cells.push(cell);
+  }
+  return cells;
 }

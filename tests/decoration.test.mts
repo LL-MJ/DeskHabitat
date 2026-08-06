@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   constrainDecorationPosition,
+  getShelterPillarCells,
   rotateDecoration,
   snapDecorationPosition,
 } from '../src/shared/decoration.ts';
@@ -29,5 +30,25 @@ describe('orchard decoration placement', () => {
   it('rotates in isometric quarter turns', () => {
     assert.equal(rotateDecoration(0), 90);
     assert.equal(rotateDecoration(270), 0);
+  });
+
+  it('maps shelter legs to four cells while keeping the center open', () => {
+    const shelter = {
+      id: 'shelter_01',
+      kind: 'shelter' as const,
+      position: { x: 3, y: 2 },
+      rotation: 0 as const,
+      mirrored: false,
+    };
+    assert.deepEqual(getShelterPillarCells(shelter, 8, 6), [
+      { x: 2, y: 2 },
+      { x: 4, y: 2 },
+      { x: 2, y: 3 },
+      { x: 4, y: 3 },
+    ]);
+    assert.deepEqual(
+      getShelterPillarCells({ ...shelter, rotation: 90 }, 8, 6),
+      getShelterPillarCells(shelter, 8, 6),
+    );
   });
 });
